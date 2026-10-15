@@ -7,7 +7,11 @@ import {PadErrors} from "../interfaces/PadErrors.sol";
 
 /// @notice Internal-only helpers (inlined by the compiler, so no link placeholders in bytecode).
 library PadLib {
-    uint256 internal constant PUSH_GAS = 40_000;
+    /// @dev Stipend for a best-effort payout. It bounds a hostile recipient's work (the call also caps
+    /// returndata at 32 bytes); a failed push becomes a claim. IMD is a bridged token behind a beacon
+    /// proxy whose live transfer path is unverified: a plain OZ-v4 shape to a fresh holder needs about
+    /// 40k and each extra cold storage read adds 2.1k, so 100k leaves more than 2x headroom.
+    uint256 internal constant PUSH_GAS = 100_000;
 
     /// @dev Deploys an EIP-1167 minimal proxy pointing at `implementation`.
     function clone(address implementation) internal returns (address instance) {

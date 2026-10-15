@@ -145,11 +145,13 @@ oracle or a guarantee against MEV.
 
 ## Bounded work and offline checks
 
-Game upkeep retains 4.5M gas per step, distribution 750k, burn 350k, and a 100k outer reserve plus
+Game upkeep retains 4.5M gas per step, distribution 950k, burn 350k, and a 100k outer reserve plus
 EIP-150 margin. The latest entered game and one older game are tended. Each collection has a
-300k cap and 100k reserve. Crown settlement requires a 5M minimum stipend plus EIP-150 margin and
-600k reserve; additional gas settles more pools. ERC20 payout attempts have a 40k cap and failed
-payments remain claimable. Direct lifecycle calls remain available when optional upkeep is skipped.
+400k cap and 100k reserve. Crown settlement requires a 7M minimum stipend plus EIP-150 margin and
+600k reserve (a bid must carry about 7.72M gas); additional gas settles more pools. ERC20 payout
+attempts have a 100k cap, more than twice a beacon-proxied bridged transfer to a fresh holder, and
+failed payments remain claimable. Before opening, measure one live IMD transfer to a zero-balance
+address and confirm it sits well under that cap (docs/AUDIT.md #38 and #39). Direct lifecycle calls remain available when optional upkeep is skipped.
 Status values are 0 waiting, 1 signup, 2 play, 3 ended, 4 finalized, 5 graduated, 6 failed, 7 drawing.
 Timers use timestamps; randomness and distinct failure blocks use ArbSys L2 numbers.
 

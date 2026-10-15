@@ -35,7 +35,10 @@ gameOf and isGame. Their initializers run atomically with creation.
 
 The deployer's public-opening review should independently check the actual manager's code,
 exttload Lock slot and pool-state layout, the configured IMD's behavior, permissions and transfer
-availability, and graduation/settlement on the target chain. These are handoff requirements, not
+availability, and graduation/settlement on the target chain. Two concrete pre-opening checks on
+robin.etherscan.io: confirm `0x8366a39cc670b4001a1121b8f6a443a643e40951` carries v4 PoolManager
+code (otherwise every graduation reverts), and send one IMD transfer to an address holding no IMD
+and record its gas, which must sit well under the 100k payout stipend (docs/AUDIT.md #38, #39). These are handoff requirements, not
 claims that the offline tests verified live dependencies. Obtain legal review and an independent
 audit before public launch. No oracle, backend signer, key, or venue pool is required by the app.
 

@@ -4,7 +4,7 @@ Local offline checks on 2026-10-15: Foundry 1.8.3, Solidity 0.8.26, Cancun, via-
 optimizer 1, `bytecode_hash = "none"`, `cbor_metadata = false`. The supplied configuration
 and vendored dependencies are unchanged.
 
-**225 tests passed, zero failed, zero skipped, across 24 suites**, with both the assignment's
+**230 tests passed, zero failed, zero skipped, across 26 suites**, with both the assignment's
 fuzz seed and the inherited configuration's seed. Foundry aggregates each invariant suite into
 one result; the individual properties and action counts are listed below. `forge build` and the
 compiled-artifact manifest validator also pass.
@@ -18,7 +18,7 @@ python3 tools/validate_manifest.py
 
 The plain test run uses the original configured seed:
 `0xb5c5a9b40cefda723aeaf099e10ee3bceaa5447ce85a23ffe7d1b73cc8363f6c`.
-The final supplied-seed run took 18.39 seconds; the default run took 15.95 seconds on this runner.
+The revision run (230 delivered tests, 26 suites, pinned seed) took 148 seconds on this runner; the earlier round took about 18 seconds on its runner.
 Compiler heuristic warnings about casts, timestamps and guarded external calls remain. These
 results are local evidence, not an independent audit or a claim of warning-free static analysis.
 
@@ -28,6 +28,7 @@ results are local evidence, not an independent audit or a claim of warning-free 
 |---|---|
 | IMD intake and payer authority | Registered clones and king alone may call pull; entry charges its own caller; players approve only the pad. Short receipts revert atomically. Public carry/burn donations pull their caller. Unsolicited balances never become carry, burn, game or graduation credits. |
 | Optional ERC20 returns | A no-return IMD variant runs the full game, graduation, crown, fee claim and one-hop burn on the real manager. False/reverting recipient payments are separately exercised. |
+| Payout stipend (revision) | `PushStipendTest` measures a beacon-proxied OZ-v4 transfer with two extra storage reads to a fresh holder (49,127 gas; the reviewer's one-read shape 44,735), asserts the 100k push lands with 2x headroom, pays an existing holder, and bounds an endless callback to the stipend. The sixteen-pool gas-eating-king crown test covers the raised 400k collection cap. |
 | Prices and unit | Initial 1 IMD; owner-only bounds 0.1–10 inclusive; event; existing-game snapshot; new-game prices; arbitrary-unit rounding fuzz; first-bid minimum and current-unit full-fill burn cap. |
 | Native rejection | Bare ETH to all five applications, both genesis clones and the hook reverts; value-bearing entry also reverts. Compiled ABIs contain no payable method or native receiver. |
 | Direct graduation | Final-curve price equivalence, both sorted currency orders, full-range tick constants, permanent position, quote dust donation, excess coin burn, atomic token unlock, donation isolation, smallest raise and sell-out after 2,400 actual rolls. |
@@ -73,10 +74,10 @@ call limits as labeled, not the total gas of tests that build large fixtures.
 
 | Operation | Gas |
 |---|---:|
-| Atomic raw-CREATE2 manifest, calldata/intrinsic and probe accounting included | **12,016,891** |
+| Atomic raw-CREATE2 manifest, calldata/intrinsic and probe accounting included | **12,017,515** |
 | Later openPad, hook and genesis clones, calldata/intrinsic included | **900,486** |
-| Combined deployment and later opening | **12,917,377** |
-| Crown transition: 16 real pools, both fee currencies, rejecting outgoing king | 4,907,515 |
+| Combined deployment and later opening | **12,918,001** |
+| Crown transition: 16 real pools, both fee currencies, gas-eating outgoing king (100k stipend each) | 5,911,586 |
 | Crown transition: 18 real pools | 2,828,401 |
 | Finalize: 200 living seats, adverse rank order | 4,394,041 |
 | Largest 32-seat draw chunk at 5,000 entries, cold game | 2,688,595 |
@@ -89,12 +90,14 @@ The atomic rehearsal enforces the **16,777,216** hard deployment ceiling and **1
 opening target. It includes runtime code-deposit cost, intrinsic/calldata gas and a 23k allowance
 for probe bookkeeping/return overhead. Factory-specific attestation/wrapper overhead is not
 simulated; the authorized deployment service must still simulate its complete transaction. The
-combined target has 82,623 gas of measured headroom. Compiler/source changes require remeasurement.
+combined target has 81,999 gas of measured headroom. Compiler/source changes require remeasurement.
 
-Upkeep retains 4.5M per game step, 750k distribution, 350k burn, a 100k outer reserve and EIP-150
-margin. Each collection retains 300k and a 100k reserve. Crown settlement retains a 5M minimum
-stipend, EIP-150 margin and 600k outer reserve. ERC20 payout attempts use 40k instead of the old
-30k native-send cap; failed attempts become claimable. Explicit claims forward remaining gas.
+Upkeep retains 4.5M per game step, 950k distribution, 350k burn, a 100k outer reserve and EIP-150
+margin. Each collection retains 400k and a 100k reserve. Crown settlement retains a 7M minimum
+stipend, EIP-150 margin and 600k outer reserve. ERC20 payout attempts use 100k instead of the old
+30k native-send cap (40k in the first IMD round, which a beacon-proxied OZ-v4 transfer to a fresh
+holder exceeded with one extra storage read: 44,735 measured in `PushStipendTest`); failed attempts
+become claimable. Explicit claims forward remaining gas.
 Tests exercise gas exhaustion without allowing optional upkeep to revert entry/roll.
 
 ## Artifacts and manifest
@@ -102,12 +105,12 @@ Tests exercise gas exhaustion without allowing optional upkeep to revert entry/r
 | Application | Initcode bytes without arguments | Runtime bytes | Constructor words |
 |---|---:|---:|---:|
 | PadToken | 3,044 | 2,999 | 0 |
-| PadGame | 19,969 | 19,928 | 0 |
+| PadGame | 19,970 | 19,929 | 0 |
 | PvPPad | 13,302 | 12,903 | 3 |
-| PadLiquidity | 14,466 | 14,086 | 3 |
-| KingOfThePad | 4,109 | 3,613 | 3 |
+| PadLiquidity | 14,467 | 14,087 | 3 |
+| KingOfThePad | 4,110 | 3,614 | 3 |
 
-Total runtime: **53,529 bytes**, or **10,705,800** code-deposit gas. Every runtime is below 24,576
+Total runtime: **53,532 bytes**, or **10,706,400** code-deposit gas. Every runtime is below 24,576
 bytes; each initcode plus arguments is below 49,152 bytes. The validator checks compiled ABI
 constructor order/types, nonpayable surfaces, static string arguments, backward references,
 nonzero lowercase addresses, owner/dev `$owner`, no library links and the protected linear opcode

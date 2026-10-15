@@ -97,7 +97,7 @@ contract CrownSettlementTest is BaseTest {
         vm.recordLogs();
         // The minimum stipend the bid must carry: the walk stops when gas no longer fits a collection.
         vm.prank(bidder);
-        king.takeCrown{gas: 5_800_000}(4.4 ether);
+        king.takeCrown{gas: 7_800_000}(4.4 ether);
         assertEq(king.king(), bidder);
         (uint256 settled,) = _collections(vm.getRecordedLogs(), oldKing);
         emit log_named_uint("pools settled by a minimum-gas bid, sixty real pools", settled);

@@ -238,7 +238,7 @@ contract AuditV3KingTest is BaseTest {
         vm.resumeGasMetering();
         uint256 start = gasleft();
         vm.prank(players[9]);
-        king.takeCrown{gas: 6_000_000}(4.4 ether);
+        king.takeCrown{gas: 8_000_000}(4.4 ether);
         uint256 used = start - gasleft();
         emit log_named_uint("16 real pools both currencies, rejecting king, bid gas used", used);
         assertLt(used, king.CROWN_DISTRIBUTE_GAS());

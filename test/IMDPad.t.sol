@@ -301,6 +301,42 @@ contract IMDPadTest is BaseTest {
         assertEq(imd.balanceOf(bailer), payoutBalance, "erased seat gets no prize");
     }
 
+    /// @dev Revision advisory 7125678: a seat that goes idle, dies and only then bails is not an
+    /// alive bail. It never counted as living before and bailing dead does not add it back, exactly as if
+    /// it had never bailed. Only a bail taken while alive (the lever CHANGE 3 names) keeps qualification.
+    function test_deadSeatBailDoesNotQualifyFundingAnyMoreThanIdlingDid() public {
+        openPad();
+        mintAll(pvp, 5);
+        advance(10 minutes);
+        uint256 start = pvp.playStart();
+        for (uint256 r; r < 8; ++r) {
+            vm.warp(start + r * 6 minutes);
+            arb.advance(300);
+            // seat 4 stops rolling after minute 36; it is dead from minute 46
+            for (uint256 i; i < (r == 7 ? 4 : 5); ++i) {
+                rollAs(pvp, players[i]);
+            }
+            arb.advance(4);
+            pvp.resolvePending(16);
+        }
+        pad.fundCarry(400 ether);
+        uint256 before = pad.carryPot();
+        vm.warp(start + 48 minutes);
+        address idler = players[4];
+        assertFalse(pvp.isAlive(pvp.impOf(idler) - 1), "idle seat is dead before it bails");
+        vm.prank(idler);
+        pvp.bailOut(0);
+        assertEq(pvp.bailedAliveCount(), 0, "a dead bail is not an alive bail");
+        assertGt(pvp.fundedReleaseCap(), 0);
+        vm.warp(pvp.hardEnd() + 1);
+        arb.advance(300);
+        pvp.finalize();
+        assertEq(pvp.livingAtEnd(), 4);
+        assertGe(
+            pad.carryPot(), before, "four qualifying seats release nothing, as with an idle seat that never bailed"
+        );
+    }
+
     function test_lateBailCannotClawBackExistingKingFunding() public {
         _live(5);
         imdDeal(address(pad), 100 ether);

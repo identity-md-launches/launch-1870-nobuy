@@ -34,7 +34,7 @@ an accepted design constraint, not an authorization defect.
    rank payments. Capped ERC20 attempts replace native sends; failure creates a debt. The
    200-living-seat gas regressions remain. Direct finalization is available if optional upkeep
    cannot fit an unusually expensive finalization.
-3. **Upkeep isolation.** Game steps retain 4.5M, distribution 750k, burn 350k, with cap/63 plus
+3. **Upkeep isolation.** Game steps retain 4.5M, distribution 950k (was 750k, see #39), burn 350k, with cap/63 plus
    100k reserve checks; return immediately below 150k. Latest entered game plus round-robin older
    game, two pools, one burn. Full-stipend OOG cannot consume the user's reserved gas. No market
    observation remains. Local estimate/replay and deliberately exhausted stipend tests remain.
@@ -58,7 +58,7 @@ an accepted design constraint, not an authorization defect.
     bypass the lock. Reclaim is game-only while locked; only liquidity can unlock.
 11. **Reentrancy and debt.** Games, king bids and claims retain guards. Pad pulls/donations/funding
     have a separate funds guard from upkeep. Effects precede payments. `PadLib` caps ERC20 push
-    attempts at 40k, handles false/revert/malformed/empty returns, and bounds returndata copying.
+    attempts at 100k (see #39), handles false/revert/malformed/empty returns, and bounds returndata copying.
     Game balances back curve IMD, pot, bounty, pending tips and claims. Liquidity balances back
     burn IMD and currency-specific claims; king balances back refunds/dev claims. Unsolicited
     donations are outside ledgers. Exact before/after receipt is required on every transferFrom and every manager fee withdrawal.
@@ -69,8 +69,14 @@ an accepted design constraint, not an authorization defect.
 
 At least five qualifying seats are required: non-erased seats alive at the game's end plus seats
 that were alive when they bailed. `livingAtEnd` still counts only rankable, non-erased living seats.
-A dead-at-bail seat adds nothing to the qualification count. An erased seat never ranks, rings a
-bell, receives a prize or contributes to king eligibility. An all-bailed game has zero net curve
+A dead-at-bail seat adds nothing to the qualification count: an idle seat that has been dead for ten
+minutes already counts for nothing, whether it bails afterwards or never bails, exactly as in v3, so
+a dead bail removes no qualification the seat still had. The lever CHANGE 3 closes is the bail by a
+seat that is *alive*: before this version it erased a living seat from the count at the cost of the
+bail tax; now that seat still qualifies the release. Going idle is not a cheaper substitute, because
+the idle seat forfeits its rank and prize all the same and the game's other seats are no worse off
+than with any idle seat (`test_deadSeatBailDoesNotQualifyFundingAnyMoreThanIdlingDid`). An erased
+seat never ranks, rings a bell, receives a prize or contributes to king eligibility. An all-bailed game has zero net curve
 reserve, no winners and fails cleanly; carry is not pulled when no living recipient remains.
 
 The funded release remains `min(3 * rollPot, 0.15 * e)`, with **e = net curve IMD**, after all
@@ -128,8 +134,8 @@ on real v4-core. It credits all tips, bounty and finalizer proceeds and still lo
 20. **Game upkeep guard.** `upkeepStep` holds the game lock during finalization and graduation;
     it does not rely solely on a payout stipend for reentrancy protection.
 21. **Crown liveness.** Bids and collection reject an already-unlocked manager using the pinned
-    Lock transient slot. Crown settlement receives surplus gas above a 600k reserve with a 5M
-    minimum plus EIP-150 margin. Unflagged *pool collection* errors still veto bids; recipient
+    Lock transient slot. Crown settlement receives surplus gas above a 600k reserve with a 7M
+    minimum plus EIP-150 margin (was 5M; each collection now retains 400k, see #39). Unflagged *pool collection* errors still veto bids; recipient
     payment errors now become claims. Ordinary distribute records three distinct-block failures
     before marking a pool broken; funded gas checks prevent fake failures through starvation.
     Pool retry and the separate liquidity claim lock remain, including the claim-callback crown
@@ -194,4 +200,21 @@ on real v4-core. It credits all tips, bounty and finalizer proceeds and still lo
     prove solvency against a malicious token that lies consistently. Rebasing, confiscation,
     and dishonest success returns are outside the supported standard ERC20 assumptions. Payout
     failures park recipient claims; failure of the token or manager itself can leave pool fees
-    in LP until recovery. This dependency requires independent review before opening.
+    in LP until recovery. This dependency requires independent review before opening. Before
+    `openPad`, the deployer should send one IMD transfer to an address with a zero IMD balance on
+    robin.etherscan.io and record its gas: it must be well under the 100k push stipend of #39 for
+    "payouts are plain transfers" to hold on the live token. The same review should confirm the
+    manifest's PoolManager has v4 code on chain 4663 (revision advisory `497d2d05`): a wrong
+    address makes every `graduate()` revert and leaves curve IMD in finalized games with no exit.
+39. **Payout stipend (revision finding `eda71ad0cb97`).** The 40k push stipend inherited from the
+    30k native-send era left about 50 gas over a beacon-proxied OpenZeppelin-v4 transfer to a fresh
+    holder (measured 39,950) and failed outright with one extra cold storage read (44,735 including
+    call overhead). Reproduced with the reviewer's proof. `PadLib.PUSH_GAS` is now 100k: it only
+    bounds a hostile recipient's or token's work (returndata is already capped at 32 bytes), and
+    every failed push is still a claim. The budgets that nest two pushes moved with it so a gas-eating
+    recipient cannot turn a collection into a failure: `COLLECT_GAS` 300k to 400k (a both-currency
+    collection with an endless IMD callback measured about 305k inside the old cap), the crown's
+    minimum settlement stipend 5M to 7M so sixteen pools still fit the floor, and the optional upkeep
+    distribution 750k to 950k so two pools still settle per step. `PushStipendTest` measures the
+    proxied shape, checks 2x headroom and that an endless callback still costs only the stipend;
+    `test_sixteenPoolsBothCurrenciesAndGasEatingKingFitSettlementBudget` covers the collection path.

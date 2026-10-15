@@ -16,7 +16,7 @@ interface IPadFund {
 contract KingOfThePad {
     /// @notice Minimum settlement stipend a bid must carry. Everything the bidder supplies beyond the
     /// outer reserve is forwarded, so more pools settle when more gas is sent.
-    uint256 public constant CROWN_DISTRIBUTE_GAS = 5_000_000;
+    uint256 public constant CROWN_DISTRIBUTE_GAS = 7_000_000;
     uint256 public constant HOLD = 1 hours;
     uint256 public constant STEP_BPS = 11_000;
     uint256 internal constant CROWN_RESERVE_GAS = 600_000;

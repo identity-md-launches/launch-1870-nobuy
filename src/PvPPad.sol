@@ -16,7 +16,7 @@ contract PvPPad {
     uint256 public constant KING_MAX_GAMES = 10;
     uint256 public constant KING_MIN_IMPS = 5;
     uint256 internal constant UPKEEP_STEP_GAS = 4_500_000;
-    uint256 internal constant UPKEEP_DISTRIBUTE_GAS = 750_000;
+    uint256 internal constant UPKEEP_DISTRIBUTE_GAS = 950_000;
     uint256 internal constant UPKEEP_BURN_GAS = 350_000;
     uint256 internal constant UPKEEP_RESERVE_GAS = 100_000;
     string internal constant GENESIS_NAME = "Pepes Value Pepes";

@@ -87,7 +87,7 @@ contract KingFeeLedgerHandler is Test {
         }
         PadLiquidity.Pool memory beforePool = liquidity.getPool(0);
         vm.prank(address(next));
-        crown.takeCrown{gas: 7_000_000}(value);
+        crown.takeCrown{gas: 9_000_000}(value);
         _recordFees(previous == address(0) ? address(next) : previous, beforePool);
         if (previous != address(0)) refunds[previous] += refund;
         ++successfulBids;

@@ -39,7 +39,7 @@ contract PadLiquidity is IUnlockCallback {
     uint256 internal constant Q96 = 1 << 96;
     address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
     uint256 internal constant BURN_INTERVAL = 10 minutes;
-    uint256 internal constant COLLECT_GAS = 300_000;
+    uint256 internal constant COLLECT_GAS = 400_000;
     /// @notice Public `distribute` examines at most this many pools per call.
     uint256 internal constant MAX_DISTRIBUTE_POOLS = 16;
     /// @dev A pre-crown settlement walks every pool while gas fits and must reach at least this many.

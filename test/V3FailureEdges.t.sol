@@ -350,7 +350,7 @@ contract V3GameFailureEdgesTest is BaseTest {
     }
 
     function _expectLiquidityCaps() private {
-        vm.expectCall(address(liq), 0, uint64(750_000), abi.encodeCall(PadLiquidity.distribute, (2)), 2);
+        vm.expectCall(address(liq), 0, uint64(950_000), abi.encodeCall(PadLiquidity.distribute, (2)), 2);
         vm.expectCall(address(liq), 0, uint64(350_000), abi.encodeCall(PadLiquidity.burnChunk, ()), 2);
     }
 }
