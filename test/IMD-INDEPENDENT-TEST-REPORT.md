@@ -14,6 +14,7 @@ installation, environment-mutating cheatcode or protocol storage overwrite was u
 | `IMDCustodyInvariant.t.sol` | Separate standard-return and empty-return IMD campaigns: multiple actors/games, arbitrary unit changes, rolls, bail-outs, rejected/recovered claims, direct donations, carry/burn funding, crowns, real v4 trades and fee collection. Each uses 96 runs × 72 calls, fail-on-revert enabled. |
 | `IMDMathProperties.t.sol` | 1,000 fuzz cases plus explicit zero/full-width boundaries for floor(a*b/d). An independent four-limb multiplication oracle checks q*d <= a*b < (q+1)*d without duplicating division. |
 | `mocks/RoutedIMD.sol` | Selective per-route transfer faults let outer wallet payments succeed before inner protocol transfers fail. No-return mode also exercises approvals and all payment routes. |
+| `IMDBudgetRevision.t.sol` (revision) | The raised budgets (push 100k, collection 400k, crown floor 7M, upkeep distribution 950k) attacked from the recipient's side: a payee whose IMD receipt callback burns a chosen or endless amount of gas. 256-case fuzz that a push never costs more than its stipend plus call overhead, parks instead of reverting, lands for modest receipt work and is parked past the stipend; zero amount makes no call. A single-seat game whose only winner eats its push: parked, claim reverts while hostile, lands once it behaves, game stays backed. A 200-seat game whose 100 ranked winners all eat their push. A binary search over snapshots for the least outer gas a crown bid can carry when the outgoing king eats every IMD push in sixteen real pools with both currencies: one unit less fails whole and changes no state, the least amount settles all sixteen with zero pool failures. A bid at 7.6M reverts with `PadSettlementGas` before collecting anything. Optional upkeep settles exactly two pools per step and the third on the next step when every IMD push is eaten, and the parked IMD is claimable afterwards. |
 
 The stateful campaigns track unsolicited donations independently, require each custodian's
 balance to equal its reserves/debts plus those donations, conserve total IMD and every coin,
@@ -94,6 +95,41 @@ check actual victim balances/allowances and caller-only approvals on these route
 The other analyzer warnings remain in the inherited implementation; no contract changes or
 blanket detector exclusions were made. No reproducible new implementation defect was found
 by these tests, so no failing proof was relabeled as expected behavior.
+
+## Revision (2026-10-16): the raised gas budgets
+
+The implementer's revision (`PUSH_GAS` 40k to 100k, `COLLECT_GAS` 300k to 400k,
+`CROWN_DISTRIBUTE_GAS` 5M to 7M, `UPKEEP_DISTRIBUTE_GAS` 750k to 950k) landed after the previous
+round. Every previous test still passes unchanged on it. `IMDBudgetRevision.t.sol` adds seven tests
+against the new numbers; nothing in `src/` was touched. Measured on the full run with the verifier's
+seed (`forge test`, 32 suites, **258 passed, 0 failed, 0 skipped**):
+
+| Measurement | Gas |
+| --- | ---: |
+| Least outer gas a crown bid can carry (sixteen pools, both currencies, every IMD push eaten) | 7,771,501 |
+| Direct finalize, 200 living seats, all 100 rank pushes eaten | 15,341,120 |
+| Raw atomic CREATE2 manifest, including calldata/intrinsic (current tree) | 12,017,515 |
+| Combined manifest and later openPad (current tree) | 12,918,001 |
+
+Observations, none of which is a contract defect that could be tested around:
+
+- The README states a bid "must carry about 7.72M gas". The measured least amount with hostile
+  recipients is 7,771,501, so wallets should be told 7.8M rather than 7.72M. A bid one unit below
+  reverts whole with no state change; 7.6M reverts with `PadSettlementGas` before any collection.
+- A 200-seat finalize where every ranked winner eats its 100k stipend costs 15.34M gas: under the
+  Arbitrum-stack block the existing regression bounds (32M) and under the 16,777,216 single-transaction
+  ceiling, but with only 1.4M to spare. This shape needs an IMD that calls recipients on transfer, which
+  the beacon-proxied OpenZeppelin-v4 token the implementer measured does not do; with the real token a
+  recipient cannot make a push cost more than the transfer itself. If the live IMD ever gained a
+  receiver hook, the direct finalize of a full game would be the first thing to re-measure.
+- The stipend rise is otherwise well behaved: a push to an endless callback costs the stipend plus
+  under 12k of call overhead and leaves a claim; the optional upkeep still settles two pools per step
+  with both IMD pushes eaten; sixteen eaten collections register zero pool failures.
+
+Harness lessons recorded for the next contributor: with `vm.pauseGasMetering()` active an endless
+receipt callback never runs out of gas, so hostile recipients must be armed only after metering
+resumes; the crown bid's own upkeep call walks two pools after the strict settlement, so cursor
+assertions must account for it.
 
 ## Limits
 
