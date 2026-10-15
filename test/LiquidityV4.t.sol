@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadGame} from "../src/PadGame.sol";
@@ -17,20 +18,20 @@ contract LiquidityV4Test is BaseTest {
         address[] memory entrants = new address[](200);
         for (uint256 i; i < 200; ++i) {
             entrants[i] = address(uint160(0x200000 + i));
-            vm.deal(entrants[i], 1 ether);
+            imdDeal(entrants[i], 400 ether);
             vm.prank(entrants[i]);
-            pvp.enter{value: 0.001 ether}();
+            pvp.enter();
         }
         advance(10 minutes);
         for (uint256 r; r < 12; ++r) {
             for (uint256 i; i < 200; ++i) {
                 vm.prank(entrants[i]);
-                pvp.roll{value: 0.002 ether}();
+                pvp.roll();
             }
             advance(61);
         }
         assertEq(pvp.rollCount(), 2400);
-        assertEq(pvp.ethRaised(), 4 ether);
+        assertEq(pvp.imdRaised(), 1600 ether);
         assertEq(pvp.tokensSold(), 800_000_000 ether);
         assertFalse(pvp.bellRang(), "12 rolls cannot reach height 50");
         advance(10 minutes);
@@ -42,7 +43,7 @@ contract LiquidityV4Test is BaseTest {
         assertTrue(pvpToken.unlocked());
         assertEq(pvpToken.balanceOf(address(pvp)), 0);
         assertGt(liq.getPool(0).liquidity, 0);
-        assertGt(address(pm).balance, 3.99 ether);
+        assertGt(imdBalance(address(pm)), 1596.0 ether);
         assertEq(pvpToken.totalSupply(), 1_000_000_000 ether);
         _assertRealState(pvpToken);
     }
@@ -56,7 +57,7 @@ contract LiquidityV4Test is BaseTest {
         pvp.finalize();
         pm.sync(address(pvpToken)); // dirty transient currency from another caller in this transaction
         graduateGame(pvp);
-        assertEq(pvp.ethRaised(), 0.0018 ether);
+        assertEq(pvp.imdRaised(), 0.9 ether);
         assertTrue(pvp.graduated() && !pvp.failed());
         assertGt(pvpToken.balanceOf(address(pm)), 0);
         assertGt(pvpToken.balanceOf(DEAD), 0);
@@ -65,7 +66,7 @@ contract LiquidityV4Test is BaseTest {
                 + pvpToken.balanceOf(address(liq)),
             pvpToken.totalSupply()
         );
-        assertEq(address(liq).balance, liq.burnBucket());
+        assertEq(imdBalance(address(liq)), liq.burnBucket());
         _assertRealState(pvpToken);
     }
 
@@ -87,7 +88,7 @@ contract LiquidityV4Test is BaseTest {
     function test_realTradingTokenFeesPaidInKindWithoutSwap() public {
         graduatePvp();
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         PoolKey memory key = liq.poolKey(address(pvpToken));
         vm.prank(players[0]);
         pvpToken.transfer(address(router), 100_000 ether);
@@ -101,24 +102,27 @@ contract LiquidityV4Test is BaseTest {
         assertEq(got, liq.getPool(0).tokenFees - feesBefore);
         assertEq(managerPrice(key), price, "collection never swaps");
         assertEq(pvpToken.balanceOf(address(liq)), 0);
-        assertEq(address(liq).balance, liq.burnBucket());
+        assertEq(imdBalance(address(liq)), liq.burnBucket());
     }
 
     function test_outgoingKingReceivesFeesBeforeCrownEvent() public {
         graduatePvp();
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
-        donateFees(liq.poolKey(address(pvpToken)), 0.1 ether, 1000 ether);
-        uint256 previousBalance = players[8].balance;
+        king.takeCrown(4.0 ether);
+        donateFees(liq.poolKey(address(pvpToken)), 40.0 ether, 1000 ether);
+        uint256 previousBalance = imdBalance(players[8]);
         vm.warp(king.challengeOpensAt());
         vm.recordLogs();
         vm.prank(players[9]);
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool paidBefore;
         for (uint256 i; i < logs.length; ++i) {
-            if (logs[i].emitter == address(liq) && logs[i].topics[0] == keccak256("KingPaid(address,uint256,bool)")) {
-                if (address(uint160(uint256(logs[i].topics[1]))) == players[8]) paidBefore = true;
+            if (
+                logs[i].emitter == address(liq)
+                    && logs[i].topics[0] == keccak256("KingPaid(address,address,uint256,bool)")
+            ) {
+                if (address(uint160(uint256(logs[i].topics[2]))) == players[8]) paidBefore = true;
             }
             if (
                 logs[i].emitter == address(king)
@@ -128,7 +132,7 @@ contract LiquidityV4Test is BaseTest {
             }
         }
         assertTrue(paidBefore);
-        assertApproxEqAbs(players[8].balance - previousBalance, 0.11 ether, 1, "refund plus ETH fees");
+        assertApproxEqAbs(imdBalance(players[8]) - previousBalance, 44.0 ether, 1, "refund plus ETH fees");
         assertApproxEqAbs(pvpToken.balanceOf(players[8]), 1000 ether, 1);
         assertEq(king.king(), players[9]);
     }
@@ -142,9 +146,9 @@ contract LiquidityV4Test is BaseTest {
         PoolKey memory broken = liq.poolKey(address(pvpToken));
         PoolKey memory healthy = liq.poolKey(pad.tokenOf(id));
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
-        donateFees(broken, 0.02 ether, 0);
-        donateFees(healthy, 0.03 ether, 0);
+        king.takeCrown(4.0 ether);
+        donateFees(broken, 8.0 ether, 0);
+        donateFees(healthy, 12.0 ether, 0);
         vm.mockCallRevert(
             address(pm),
             abi.encodeCall(
@@ -158,18 +162,18 @@ contract LiquidityV4Test is BaseTest {
         }
         assertEq(liq.getPool(0).failures, 3);
         vm.warp(king.challengeOpensAt());
-        uint256 before = players[8].balance;
+        uint256 before = imdBalance(players[8]);
         vm.prank(players[9]);
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         assertEq(king.king(), players[9]);
-        assertApproxEqAbs(players[8].balance - before, 0.04 ether, 1e10, "healthy pool paid plus old bid refund");
+        assertApproxEqAbs(imdBalance(players[8]) - before, 16.0 ether, 1e10, "healthy pool paid plus old bid refund");
         vm.clearMockedCalls();
-        uint256 newBefore = players[9].balance;
-        uint256 oldBefore = players[8].balance;
+        uint256 newBefore = imdBalance(players[9]);
+        uint256 oldBefore = imdBalance(players[8]);
         assertTrue(liq.retryPool(0));
         assertEq(liq.getPool(0).failures, 0);
-        assertGe(players[8].balance - oldBefore, 0.02 ether - 10, "failed pool stays owed to the king of its reign");
-        assertEq(players[9].balance, newBefore);
+        assertGe(imdBalance(players[8]) - oldBefore, 8.0 ether - 10, "failed pool stays owed to the king of its reign");
+        assertEq(imdBalance(players[9]), newBefore);
     }
 
     function test_crownPrecollectsAllEighteenPools() public {
@@ -181,21 +185,21 @@ contract LiquidityV4Test is BaseTest {
             graduateGame(game);
         }
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         for (uint256 i; i < 18; ++i) {
-            donateFees(liq.poolKey(liq.getPool(i).token), 0.001 ether, 0);
+            donateFees(liq.poolKey(liq.getPool(i).token), 0.5 ether, 0);
         }
         vm.warp(king.challengeOpensAt());
         vm.resumeGasMetering();
         vm.recordLogs();
-        uint256 oldBefore = players[8].balance;
+        uint256 oldBefore = imdBalance(players[8]);
         uint256 start = gasleft();
         vm.prank(players[9]);
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         uint256 used = start - gasleft();
         emit log_named_uint("takeCrown gas, eighteen real pools", used);
         assertLt(used, 8_000_000);
-        assertApproxEqAbs(players[8].balance - oldBefore, 0.028 ether, 18, "refund plus all eighteen pools");
+        assertApproxEqAbs(imdBalance(players[8]) - oldBefore, 13 ether, 20e12, "refund plus all eighteen pools");
         Vm.Log[] memory logs = vm.getRecordedLogs();
         uint256 collectedBefore;
         uint256 collectedAfter;
@@ -207,7 +211,7 @@ contract LiquidityV4Test is BaseTest {
             ) crowned = true;
             if (
                 logs[i].emitter == address(liq)
-                    && logs[i].topics[0] == keccak256("FeesCollected(uint256,address,uint256,uint256)")
+                    && logs[i].topics[0] == keccak256("ImdFeesCollected(uint256,address,uint256,uint256)")
             ) {
                 if (crowned) ++collectedAfter;
                 else ++collectedBefore;
@@ -223,22 +227,22 @@ contract LiquidityV4Test is BaseTest {
     function test_failedDistributorBlocksCrown() public {
         graduatePvp();
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         vm.warp(king.challengeOpensAt());
         vm.mockCallRevert(address(liq), abi.encodeWithSelector(PadLiquidity.settleCrown.selector), bytes("failure"));
         vm.prank(players[9]);
         vm.expectRevert(bytes("failure"));
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         assertEq(king.king(), players[8]);
     }
 
     function test_realBurnIgnoresAnUnrelatedPriorTokenSync() public {
         graduatePvp();
         vm.warp(vm.getBlockTimestamp() + 10 minutes);
-        uint256 before = liq.totalBurnedEth();
+        uint256 before = liq.totalBurnedIMD();
         pm.sync(address(pvpToken));
         liq.burnChunk();
-        assertGt(liq.totalBurnedEth(), before);
+        assertGt(liq.totalBurnedIMD(), before);
     }
 
     function test_collectPoolRejectsExternalCallers() public {

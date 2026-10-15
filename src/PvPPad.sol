@@ -18,7 +18,6 @@ contract PvPPad {
     uint256 internal constant UPKEEP_STEP_GAS = 4_500_000;
     uint256 internal constant UPKEEP_DISTRIBUTE_GAS = 750_000;
     uint256 internal constant UPKEEP_BURN_GAS = 350_000;
-    uint256 internal constant UPKEEP_OBSERVE_GAS = 80_000;
     uint256 internal constant UPKEEP_RESERVE_GAS = 100_000;
     string internal constant GENESIS_NAME = "Pepes Value Pepes";
     string internal constant GENESIS_TICKER = "PVP";
@@ -50,6 +49,9 @@ contract PvPPad {
     /// @notice Launch id of the current genesis (PvP). A failed genesis is replaced by a new one.
     uint256 public genesisId;
     bool private locked;
+    bool private fundsLocked;
+    uint256 public unit = 1 ether;
+    event UnitChanged(uint256 previous, uint256 current);
 
     Launch[] internal launches;
     mapping(address => bool) public isGame;
@@ -78,6 +80,37 @@ contract PvPPad {
         deployedAt = uint64(block.timestamp);
     }
 
+    modifier fundsGuard() {
+        if (fundsLocked) revert PadErrors.PadReentrancy();
+        fundsLocked = true;
+        _;
+        fundsLocked = false;
+    }
+
+    function imd() public view returns (address) {
+        return IPadLiquidity(liquidity).imd();
+    }
+
+    function setUnit(uint256 u) external {
+        if (msg.sender != owner) revert PadErrors.PadNotOwner();
+        if (u < 0.1 ether || u > 10 ether) revert PadErrors.PadAmount();
+        emit UnitChanged(unit, u);
+        unit = u;
+    }
+
+    /// @notice Only immutable, pad-created games and the king may pull. Their user-facing methods
+    /// always pass their own msg.sender; none exposes an arbitrary payer parameter.
+    function pull(address from, uint256 amount) external fundsGuard {
+        if (!isGame[msg.sender] && msg.sender != king) revert PadErrors.PadNotGame();
+        PadLib.pullExact(imd(), from, msg.sender, amount);
+    }
+
+    /// @notice Permissionless IMD donation to the PvP burn bucket, with approval only to the pad.
+    function burn(uint256 amount) external fundsGuard {
+        PadLib.pullExact(imd(), msg.sender, liquidity, amount);
+        IPadLiquidity(liquidity).creditBurn(msg.sender, amount);
+    }
+
     // ---- one-shot bindings from later constructors --------------------------------------------
     function bindLiquidity() external {
         if (!(liquidity == address(0))) revert PadErrors.PadBound();
@@ -93,7 +126,7 @@ contract PvPPad {
         emit KingBound(msg.sender);
     }
 
-    /// @notice A genesis game that ended with no net curve ETH (no roll, or every roll's coins bailed
+    /// @notice A genesis game that ended with no net curve IMD (no roll, or every roll's coins bailed
     /// out back to the curve) is marked failed and its token burned.
     /// Anyone may then relaunch PvP so the pad is never locked: the new launch becomes the genesis
     /// that other launches, the king and the burn wait for. `launch()` does the same when it finds
@@ -156,6 +189,7 @@ contract PvPPad {
         isGame[game] = true;
         IPadToken(token).initialize(name, ticker, game, liquidity);
         IPadGame(game).initialize(id, token, liquidity, genesis);
+        PadLib.approve(imd(), game);
         emit Launched(id, token, game, creator, name, ticker);
     }
 
@@ -169,29 +203,31 @@ contract PvPPad {
 
     // ---- pots ------------------------------------------------------------------------------------
     /// @notice Permissionless donation; anyone may fund carry. Donations never bypass release caps.
-    function fundCarry() external payable {
-        carryPot += msg.value;
-        emit CarryFunded(msg.sender, msg.value);
+    function fundCarry(uint256 amount) external fundsGuard {
+        PadLib.pullExact(imd(), msg.sender, address(this), amount);
+        carryPot += amount;
+        emit CarryFunded(msg.sender, amount);
     }
 
     /// @notice A registered game pulls only its unused funded-release allowance at finalization.
-    /// The immutable game computes the allowance after counting at least five living Imps.
-    function takeCarry(uint256 id, uint256 maxAmount) external {
+    /// The immutable game computes the allowance after counting at least five qualifying seats.
+    function takeCarry(uint256 id, uint256 maxAmount) external fundsGuard {
         _onlyGame(id);
         uint256 carry = carryPot < maxAmount ? carryPot : maxAmount;
         if (carry == 0) return;
         carryPot -= carry;
-        IPadGame(msg.sender).fundPot{value: carry}();
+        IPadGame(msg.sender).fundPot(carry);
         emit CarryPaid(id, carry);
     }
 
     /// @notice King's 50% share: live games with >= 5 entries before drawing or Imps after drawing,
     /// among the last 10 entered launches, weighted
     /// by roll-earned pot size (equal split when every pot is empty); none live: carry pot. Each game
-    /// pays funded ETH out only with >= 5 living Imps at its end, at most 3x its roll-earned pot and
-    /// at most 15% of its curve ETH; the rest returns here as carry.
-    function fundGames() external payable {
+    /// pays funded IMD out only with >= 5 qualifying seats at its end, at most 3x its roll-earned pot and
+    /// at most 15% of its curve IMD; the rest returns here as carry.
+    function fundGames(uint256 amount) external fundsGuard {
         if (!(msg.sender == king)) revert PadErrors.PadNotKing();
+        PadLib.pullExact(imd(), msg.sender, address(this), amount);
         uint256 n = entered.length;
         uint256 from = n > KING_MAX_GAMES ? n - KING_MAX_GAMES : 0;
         address[] memory games = new address[](n - from);
@@ -208,22 +244,22 @@ contract PvPPad {
             ++count;
         }
         if (count == 0) {
-            carryPot += msg.value;
-            emit CarryFunded(msg.sender, msg.value);
+            carryPot += amount;
+            emit CarryFunded(msg.sender, amount);
             return;
         }
         uint256 sent;
         for (uint256 i; i < count; ++i) {
-            uint256 share = total == 0 ? msg.value / count : msg.value * pots[i] / total;
-            if (i == count - 1) share = msg.value - sent;
+            uint256 share = total == 0 ? amount / count : amount * pots[i] / total;
+            if (i == count - 1) share = amount - sent;
             sent += share;
-            if (share != 0) IPadGame(games[i]).fundPot{value: share}();
+            if (share != 0) IPadGame(games[i]).fundPot(share);
         }
-        emit GamesFunded(msg.value, count);
+        emit GamesFunded(amount, count);
     }
 
     // ---- upkeep ----------------------------------------------------------------------------------
-    /// @notice Bounded upkeep: one IMD/ETH spot observation for the conversion anchor, the latest
+    /// @notice Bounded upkeep: the latest
     /// entered game, one older entered game (round-robin), two pools, one burn chunk. Launches
     /// without an entry have nothing to tend.
     function upkeep() public {
@@ -240,10 +276,6 @@ contract PvPPad {
     function _upkeep(address caller) internal {
         if (locked || gasleft() < UPKEEP_RESERVE_GAS + 50_000) return;
         locked = true;
-        // Every pad touch records the venue spot, so the conversion anchor a finalization uses was
-        // set by the whole game's activity, not by whoever finalizes. Capped; the reserve check
-        // above leaves room for it, and later steps re-check their own budgets.
-        try IPadLiquidity(liquidity).observeMarket{gas: UPKEEP_OBSERVE_GAS}() {} catch {}
         uint256 n = entered.length;
         if (n != 0) {
             _tend(launches[entered[n - 1] - 1].game, caller);

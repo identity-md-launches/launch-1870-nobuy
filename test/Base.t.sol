@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {PadToken} from "../src/PadToken.sol";
@@ -27,9 +28,7 @@ contract OneShotDeployer {
         token = new PadToken();
         game = new PadGame();
         pad = new PvPPad(owner, address(token), address(game));
-        liquidity = new PadLiquidity(
-            poolManager, address(pad), IMD, 0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02
-        );
+        liquidity = new PadLiquidity(poolManager, address(pad), IMD);
         king = new KingOfThePad(address(pad), address(liquidity), owner);
         gasUsed = g - gasleft();
     }
@@ -54,6 +53,7 @@ abstract contract BaseTest is Test {
     PadToken pvpToken;
 
     address[] players;
+    TestIMD imd;
 
     function setUp() public virtual {
         vm.warp(1_800_000_000);
@@ -70,11 +70,16 @@ abstract contract BaseTest is Test {
         pad = deployer.pad();
         liq = deployer.liquidity();
         king = deployer.king();
+        TestIMD tokenImpl = new TestIMD();
+        vm.etch(IMD, address(tokenImpl).code);
+        imd = TestIMD(IMD);
+        imd.setPad(address(pad));
+        imdDeal(address(this), 40000 ether);
         delete players;
         for (uint256 i; i < 12; ++i) {
             address p = address(uint160(0xA000 + i));
             players.push(p);
-            vm.deal(p, 10 ether);
+            imdDeal(p, 4000 ether);
         }
     }
 
@@ -109,7 +114,7 @@ abstract contract BaseTest is Test {
     function mintAll(PadGame g, uint256 n) internal {
         for (uint256 i; i < n; ++i) {
             vm.prank(players[i]);
-            g.enter{value: 0.001 ether}();
+            g.enter();
         }
     }
 
@@ -157,12 +162,12 @@ abstract contract BaseTest is Test {
     }
 
     function donateFees(PoolKey memory key, uint256 e, uint256 t) internal {
-        vm.deal(address(router), address(router).balance + e);
+        imd.mint(address(router), e);
+        address coin = key.currency0 == IMD ? key.currency1 : key.currency0;
         if (t != 0) {
-            // Move existing unlocked tokens from a roller, never inflate the total supply.
-            address source = PadToken(key.currency1).balanceOf(players[0]) >= t ? players[0] : DEAD;
+            address source = PadToken(coin).balanceOf(players[0]) >= t ? players[0] : DEAD;
             vm.prank(source);
-            PadToken(key.currency1).transfer(address(router), t);
+            PadToken(coin).transfer(address(router), t);
         }
         router.donate(key, e, t);
     }
@@ -173,7 +178,7 @@ abstract contract BaseTest is Test {
 
     function rollAs(PadGame g, address who) internal {
         vm.prank(who);
-        g.roll{value: 0.002 ether}();
+        g.roll();
     }
 
     /// @dev Signup, then every player rolls once per minute until the game ends by time, and finalizes.
@@ -206,17 +211,7 @@ abstract contract BaseTest is Test {
 
     receive() external payable {}
 
-    // Retained v3 regressions run on the explicitly required zero-IMD fallback path.
-    // V4ConversionTest separately seeds a real IMD/ETH pool and exercises normal conversion.
     function graduateGame(PadGame g) internal {
-        if (g.finalized() && !g.graduated() && g.ethRaised() != 0) {
-            // The stall clock starts with the escrow, not at finalization.
-            (,,,,, bool started,) = liq.conversions(address(g));
-            if (!started) g.prepareConversion();
-            (,,,, uint64 progress,,) = liq.conversions(address(g));
-            uint256 deadline = uint256(progress) + 24 hours;
-            if (vm.getBlockTimestamp() < deadline) vm.warp(deadline);
-        }
         g.graduate();
     }
 

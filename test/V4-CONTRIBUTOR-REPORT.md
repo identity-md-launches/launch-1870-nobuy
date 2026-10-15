@@ -1,3 +1,6 @@
+> Historical parked ETH v4 report, retained as base-project evidence. Current IMD behavior and results are in
+> [docs/TEST-REPORT.md](../docs/TEST-REPORT.md) and [docs/AUDIT.md](../docs/AUDIT.md).
+
 # v4 test contribution: revision for the pad-wide anchor
 
 Scope of this round: the implementation revision (commit `891e8e7`) replaced the per-game conversion

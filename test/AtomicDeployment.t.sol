@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {PvPPad} from "../src/PvPPad.sol";
@@ -51,9 +52,7 @@ contract AtomicDeploymentTest is Test {
             bytes memory args;
             if (i == 2) args = abi.encode(OWNER, predicted[0], predicted[1]);
             if (i == 3) {
-                args = abi.encode(
-                    MANAGER, predicted[2], IMD, 0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02
-                );
+                args = abi.encode(MANAGER, predicted[2], IMD);
             }
             if (i == 4) args = abi.encode(predicted[2], predicted[3], OWNER);
             codes[i] = abi.encodePacked(vm.getCode(artifacts[i]), args);
@@ -93,11 +92,10 @@ contract AtomicDeploymentTest is Test {
         assertEq(pad.launchCount(), 0);
         assertEq(PadToken(deployed[0]).totalSupply(), 0);
         assertEq(liquidity.poolCount(), 0);
-        assertEq(
-            keccak256(abi.encode(liquidity.imdEthKey())),
-            0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02
-        );
+        assertEq(liquidity.imd(), IMD);
         assertEq(pad.owner(), OWNER);
+        TestIMD imdImpl = new TestIMD();
+        vm.etch(IMD, address(imdImpl).code);
         // Genesis is deliberately later, but also check the combined budget conservatively.
         bytes32 hash = liquidity.hookInitCodeHash();
         bytes32 hookSalt;

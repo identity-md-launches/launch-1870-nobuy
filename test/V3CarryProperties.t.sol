@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Vm} from "forge-std/Vm.sol";
 import {BaseTest} from "./Base.t.sol";
@@ -29,7 +30,7 @@ contract V3CarryPropertiesTest is BaseTest {
         uint256 kingSeed
     ) public {
         uint256 living = bound(livingSeed, 0, 6);
-        uint256 donation = bound(donationSeed, 0, 0.1 ether);
+        uint256 donation = bound(donationSeed, 0, 40.0 ether);
         PadGame game = _prepareGame(donation, kingSeed);
         _playToEnd(game, living);
         _checkSettlement(game, living);
@@ -41,13 +42,13 @@ contract V3CarryPropertiesTest is BaseTest {
         // Zero, exactly the minimum bid, and overfunded games all remain in the input domain.
         uint256 mode = kingSeed % 3;
         if (mode != 0) {
-            uint256 bid = mode == 1 ? 0.01 ether : bound(kingSeed, 0.01 ether, 1 ether);
+            uint256 bid = mode == 1 ? 4.0 ether : bound(kingSeed, 4.0 ether, 400 ether);
             vm.prank(players[8]);
-            king.takeCrown{value: bid}();
+            king.takeCrown(bid);
             assertEq(game.fundedPot(), bid / 2);
         }
         vm.prank(players[11]);
-        pad.fundCarry{value: donation}();
+        pad.fundCarry(donation);
         uint256 carryBeforeDraw = pad.carryPot();
         uint256 fundedBeforeDraw = game.fundedPot();
         advance(10 minutes);
@@ -78,7 +79,7 @@ contract V3CarryPropertiesTest is BaseTest {
         s.funded = game.fundedPot();
         s.cap = game.fundedReleaseCap();
         assertLe(s.cap, s.earned * 3, "release cap exceeds three times earned pot");
-        assertLe(s.cap, game.ethRaised() * 15 / 100, "release cap exceeds fifteen percent of curve ETH");
+        assertLe(s.cap, game.imdRaised() * 15 / 100, "release cap exceeds fifteen percent of curve ETH");
         s.carryBefore = pad.carryPot();
         uint256 unused = living >= 5 && s.cap > s.funded ? s.cap - s.funded : 0;
         s.expectedPull = unused < s.carryBefore ? unused : s.carryBefore;
@@ -99,8 +100,8 @@ contract V3CarryPropertiesTest is BaseTest {
             s.earned + available,
             "payouts and returned carry do not conserve the entire game pot"
         );
-        assertEq(address(game).balance, game.ethRaised(), "finalization left unaccounted pot ETH");
-        assertEq(address(pad).balance, pad.carryPot());
+        assertEq(imdBalance(address(game)), game.imdRaised(), "finalization left unaccounted pot ETH");
+        assertEq(imdBalance(address(pad)), pad.carryPot());
         uint256 carryAfter = pad.carryPot();
         vm.expectRevert(abi.encodeWithSignature("PadNotFinalizable()"));
         game.finalize();
@@ -123,8 +124,8 @@ contract V3CarryPropertiesTest is BaseTest {
 
     function _beneficiaryBalances() private view returns (uint256 total) {
         for (uint256 i; i < 6; ++i) {
-            total += players[i].balance;
+            total += imdBalance(players[i]);
         }
-        total += players[10].balance;
+        total += imdBalance(players[10]);
     }
 }

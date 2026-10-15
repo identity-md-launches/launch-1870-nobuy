@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
+import {IERC20Min} from "../interfaces/Interfaces.sol";
+
 import {PadErrors} from "../interfaces/PadErrors.sol";
 
 /// @notice Internal-only helpers (inlined by the compiler, so no link placeholders in bytecode).
 library PadLib {
-    uint256 internal constant PUSH_GAS = 30_000;
+    uint256 internal constant PUSH_GAS = 40_000;
 
     /// @dev Deploys an EIP-1167 minimal proxy pointing at `implementation`.
     function clone(address implementation) internal returns (address instance) {
@@ -17,12 +19,39 @@ library PadLib {
         if (!(instance != address(0))) revert PadErrors.PadCloneFailed();
     }
 
-    /// @dev Gas-capped ETH push; returns false instead of reverting so the caller can make it claimable.
-    function push(address to, uint256 amount) internal returns (bool ok) {
-        if (amount == 0) return true;
+    /// @dev Bounded ERC20 call, accepting empty returns. No returndata copy bomb.
+    function tokenCall(address token, bytes memory data, uint256 gasCap) internal returns (bool ok) {
+        if (token.code.length == 0) return false;
         assembly ("memory-safe") {
-            ok := call(PUSH_GAS, to, amount, 0, 0, 0, 0)
+            let ptr := mload(0x40)
+            mstore(ptr, 0)
+            ok := call(gasCap, token, 0, add(data, 32), mload(data), ptr, 32)
+            ok := and(ok, or(iszero(returndatasize()), and(eq(returndatasize(), 32), eq(mload(ptr), 1))))
         }
+    }
+
+    function push(address token, address to, uint256 amount) internal returns (bool) {
+        return amount == 0 || tokenCall(token, abi.encodeWithSelector(0xa9059cbb, to, amount), PUSH_GAS);
+    }
+
+    function transfer(address token, address to, uint256 amount) internal {
+        if (!tokenCall(token, abi.encodeWithSelector(0xa9059cbb, to, amount), gasleft())) revert PadErrors.PadToken();
+    }
+
+    function approve(address token, address spender) internal {
+        if (!tokenCall(token, abi.encodeWithSelector(0x095ea7b3, spender, type(uint256).max), gasleft())) {
+            revert PadErrors.PadAllowance();
+        }
+    }
+
+    /// @dev Credits are based on the specified, verified receipt, never the contract's whole balance.
+    function pullExact(address token, address from, address to, uint256 amount) internal {
+        uint256 beforeBalance = IERC20Min(token).balanceOf(to);
+        if (!tokenCall(token, abi.encodeWithSelector(0x23b872dd, from, to, amount), gasleft())) {
+            revert PadErrors.PadToken();
+        }
+        uint256 afterBalance = IERC20Min(token).balanceOf(to);
+        if (afterBalance < beforeBalance || afterBalance - beforeBalance != amount) revert PadErrors.PadAmount();
     }
 
     /// @dev floor(a * b / d) with full 512-bit intermediate precision.

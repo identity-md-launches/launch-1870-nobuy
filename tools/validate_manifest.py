@@ -11,13 +11,12 @@ assert set(manifest) == {"kind", "contracts", "notes"}
 assert manifest["kind"] == "evm_contracts"
 assert isinstance(manifest["notes"], str) and manifest["notes"]
 imd = "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127"
-imd_eth_pool_id = "0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02"
 expected = [
     ("PadToken", []),
     ("PadGame", []),
     ("PvPPad", ["$owner", "$contract:PadToken", "$contract:PadGame"]),
     ("PadLiquidity", ["0x8366a39cc670b4001a1121b8f6a443a643e40951", "$contract:PvPPad",
-                      imd, imd_eth_pool_id]),
+                      imd]),
     ("KingOfThePad", ["$contract:PvPPad", "$contract:PadLiquidity", "$owner"]),
 ]
 
@@ -44,6 +43,7 @@ for item, (name, args) in zip(manifest["contracts"], expected):
     artifact = json.loads((root / "out" / (name + ".sol") / (name + ".json")).read_text())
     constructors = [e for e in artifact["abi"] if e["type"] == "constructor"]
     assert len(constructors) == 1
+    assert not any(e.get("stateMutability") == "payable" or e["type"] in ("receive", "fallback") for e in artifact["abi"])
     constructor = constructors[0]
     assert constructor["stateMutability"] == "nonpayable"
     types = flat_types(constructor["inputs"])

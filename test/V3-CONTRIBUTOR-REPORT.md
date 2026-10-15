@@ -1,3 +1,6 @@
+> Historical v3 report, retained as base-project evidence. Current IMD behavior and results are in
+> [docs/TEST-REPORT.md](../docs/TEST-REPORT.md) and [docs/AUDIT.md](../docs/AUDIT.md).
+
 # PvP Pad v3 contributor test report
 
 Verification date: 2026-10-14. Foundry 1.8.3, Solidity 0.8.26, Cancun, optimizer 200,

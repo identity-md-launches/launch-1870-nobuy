@@ -1,153 +1,135 @@
-# PvP Pad v4 test report
+# PvP Pad v4 IMD test report
 
-Local offline verification on 2026-10-15 with Foundry 1.8.3 and Solidity 0.8.26. Settings:
-Cancun, via-IR, optimizer **1**, `bytecode_hash = "none"`, `cbor_metadata = false`.
+Local offline checks on 2026-10-15: Foundry 1.8.3, Solidity 0.8.26, Cancun, via-IR,
+optimizer 1, `bytecode_hash = "none"`, `cbor_metadata = false`. The supplied configuration
+and vendored dependencies are unchanged.
 
-**227 tests passed, zero failed, zero skipped, across 22 suites** (plus the four reviewer proofs). This includes all 193 inherited
-v3 tests and 34 v4 tests (8 added in the revision). The complete run used the assignment's seed, also pinned in
-`foundry.toml`:
+**225 tests passed, zero failed, zero skipped, across 24 suites**, with both the assignment's
+fuzz seed and the inherited configuration's seed. Foundry aggregates each invariant suite into
+one result; the individual properties and action counts are listed below. `forge build` and the
+compiled-artifact manifest validator also pass.
 
 ```sh
 forge build
-FOUNDRY_FUZZ_SEED=0xb5c5a9b40cefda723aeaf099e10ee3bceaa5447ce85a23ffe7d1b73cc8363f6c forge test -vv
-forge fmt --check
+FOUNDRY_FUZZ_SEED=0xd6321f3461e845380299a439f8370d678c37b29a7be1fd0dbac3b3e4f390e402 forge test --gas-report -vv
+forge test
 python3 tools/validate_manifest.py
 ```
 
-Build, formatting and manifest checks pass. Compiler heuristic lint warnings remain about casts,
-timestamps and guarded external calls; this is not a claim of warning-free static analysis or an
-independent audit. Tests require no network, RPC, fork, environment reads, FFI or external files.
+The plain test run uses the original configured seed:
+`0xb5c5a9b40cefda723aeaf099e10ee3bceaa5447ce85a23ffe7d1b73cc8363f6c`.
+The final supplied-seed run took 18.39 seconds; the default run took 15.95 seconds on this runner.
+Compiler heuristic warnings about casts, timestamps and guarded external calls remain. These
+results are local evidence, not an independent audit or a claim of warning-free static analysis.
 
-## Coverage
+## Coverage and regression changes
 
-| Coverage | Tests | Evidence |
+| Area | Evidence |
+|---|---|
+| IMD intake and payer authority | Registered clones and king alone may call pull; entry charges its own caller; players approve only the pad. Short receipts revert atomically. Public carry/burn donations pull their caller. Unsolicited balances never become carry, burn, game or graduation credits. |
+| Optional ERC20 returns | A no-return IMD variant runs the full game, graduation, crown, fee claim and one-hop burn on the real manager. False/reverting recipient payments are separately exercised. |
+| Prices and unit | Initial 1 IMD; owner-only bounds 0.1–10 inclusive; event; existing-game snapshot; new-game prices; arbitrary-unit rounding fuzz; first-bid minimum and current-unit full-fill burn cap. |
+| Native rejection | Bare ETH to all five applications, both genesis clones and the hook reverts; value-bearing entry also reverts. Compiled ABIs contain no payable method or native receiver. |
+| Direct graduation | Final-curve price equivalence, both sorted currency orders, full-range tick constants, permanent position, quote dust donation, excess coin burn, atomic token unlock, donation isolation, smallest raise and sell-out after 2,400 actual rolls. |
+| One-hop burn | Actual v4 swaps, both directions, price limits, partial fills, retained input, current-unit cap, interval, bucket/manager/dead balances and unrelated prior sync. No conversion venue exists in the application. |
+| Bail-outs | Profit, loss, minOut rollback, zero coin balance, dead/erased seat, pending roll tips, hard end/bell rejection, sell-out/rebuy, all-bailed failure, rejected payout claims and repeated-bail exclusion. |
+| Late bail and funding | Five initial living seats with one alive bail retain release to four rankable survivors; six-seat variant; already-funded king money remains releasable. Erased seats never rank, ring, win or qualify a game for new king funding. |
+| Sole-buyer economics | Five-wallet profitable-bail scenario keeps funded release and dumps all remaining coins through the real coin/IMD pool; aggregate buyer still loses. AUDIT.md #13 gives the bound in IMD. |
+| Crown and in-kind fees | IMD bids/refunds/dev split; IMD and coin fee claims; failed recipient does not break a pool or freeze the crown; short manager receipt cannot create fee credit; reign stamps, cursor steering, 18/40/60-pool settlement, distinct-block failure/retry, manager-unlock and reentrancy regressions. |
+| Raffle, game and upkeep | All applicable inherited v3 regressions: fixed/lapsed seed and one-time bounty, 5,000 entrants, statistical selection, 200 living seats, ranks/bell/death, resolver expiry/tips, carry chains and caps, entry/roll gas isolation, bounded upkeep and malicious callback recipients. |
+| Deployment policy | Raw atomic CREATE2 manifest rehearsal, no external dependency code during constructors, zero token supply/name/symbol, sealed templates, no initial pool/hook, ownership/bindings, runtime sizes, no application escape opcodes or library links. |
+
+Tests use the unmodified vendored **Uniswap v4-core v4.0.0 PoolManager**, including its actual
+liquidity, swaps, donation, fees, transient lock and settlement code. IMD and ArbSys are local
+fixtures. No successful pool operation substitutes mocked AMM math. Recipient failures and
+selected ranking states use explicit adversarial fixtures. Local fixtures establish neither live
+IMD behavior nor production randomness.
+
+The old v3 native-value tests are ported to IMD with the requested price changes and token failure
+callbacks. Some inherited test names still contain `ETH`; their balances and assertions now use
+IMD. Only conversion/anchor/escrow/native-fallback v4 scenarios were retired because that entire
+feature was removed. The former bail/conversion invariant is replaced by a seeded IMD lifecycle
+campaign. Historical contributor reports and audit histories are marked as superseded.
+
+## Fuzz and invariant campaigns
+
+| Campaign | Final configured run | Properties |
 |---|---:|---|
-| All inherited v3 suites | 193 | Raffle, seed bounty, resolver tips/expiry, ranking/bell/death, 200-seat settlement, carry release, crown ordering and gas caps, in-kind fees, reign stamps, broken-pool retries, entry/roll upkeep isolation, claims/reentrancy, deployment and invariant campaigns |
-| `V4PadTest` | 34 | Bail profit/loss/minOut rollback; front-run bundled with its own finalize cannot lower the pad-wide anchor and loses; observation only raises the anchor and every touch refreshes it; erasure of rank/bell/living/funding eligibility; timely pending tips; croaked wallets; all-erased end clock; rejected payments; actual sell-out then bail and buy; funded sybil economics; ETH/token conservation; real IMD/ETH limits, partial fills, interval, gas floor, per-game escrow isolation and donation isolation; exact initial price equivalence, token unlock, both currency orders; partial timeout; zero-liquidity no-progress timeout; bounded upkeep; two-hop burn and intermediate balances; IMD/coin fees across crown transitions; constructor/access failures, including changed PoolId fields and IMD/key mismatch; large raw-token price ratios |
-| `V4FallbackTest` | 2 | Uninitialized real venue, exact 24-hour native fallback, continued v3 burn; native genesis followed by an IMD graduation, with rounding remainder collected as fees instead of stranded |
+| Whole pad | 40 × 60 = 2,400 actions per seed | Curve price/supply bounds; pots, tips, claims and carry; pad/liquidity/king/game balance obligations; IMD conservation; coin supply and graduation unlock |
+| Live game seeded with rolls/carry, including bail-outs | 40 × 60 = 2,400 actions per seed | Same whole-system properties, starting from a funded active game |
+| Resolver accounting | 128 × 96 = 12,288 actions per seed | Every tip pending, expired or owed to its actual resolver; IMD and coin conservation |
+| King fee accounting | 128 × 64 = 8,192 actions per seed | In-kind fees remain with their reign, including rejected payments; real-pool fees and bids conserve IMD |
 
-The two new fuzz tests run 64 cases each: bail sequences independently reconcile ETH and supply,
-and real front-run / conversion / back-run swaps vary front-run capital from 0.0001 to 60 ETH.
-The existing fuzz counts and invariant campaign depths remain, including the resolver campaign
-(128 × 96 actions), king-fee campaign (128 × 64), and whole-pad campaign (40 × 60).
-The original statistical raffle and 5,000-entry draw tests remain.
+The seeded live-game invariant also passed an earlier 64 × 500 = 32,000-action run before its
+final per-test campaign settings were made explicit. Final campaign reverts are allowed adversarial
+actions; property assertions all pass. Additional fuzz cases cover curve quotes (1,000 each),
+monotonicity (500), crown splits/refunds/hold (200 each), ranks/funding/roll splits, bail sequences,
+carry caps, pending liabilities and arbitrary unit values. Statistical raffle regressions remain.
 
-Every successful pool interaction uses the unmodified, vendored **Uniswap v4-core v4.0.0
-PoolManager**, including initialization, full-range liquidity, fees, swaps, donations, settlement
-and storage reads. The test IMD is a minimal plain, non-rebasing ERC20 fixture at the supplied
-address. Its ETH/IMD pool has the exact production key and id, with approximately 68 ETH of
-full-range depth and a fixture price of 1 raw IMD unit per wei. This price is chosen for local
-arithmetic and is not asserted to be the live price. Both tokens use raw units throughout.
-MockArbSys models the L2 hash window; a mock does not establish production randomness.
+## Gas
 
-V3 regression adaptations are limited to the requested lifecycle changes and deployment size:
-normal v3 ETH-pool scenarios explicitly wait for the new zero-IMD 24-hour fallback, rejected actions
-expect the corresponding named v4 custom error, and the whole-pad accounting invariant includes
-prepared conversion escrows. The actual v3 behavior assertions remain. No assertion relies on a
-successful mocked PoolManager swap or substituted pool math. Explicit venue failures and selected
-ranking fixtures are used only where stated by the tests.
+Measurements below come from the final supplied-seed run. They are operation gas or estimated
+call limits as labeled, not the total gas of tests that build large fixtures.
 
-## Revision (findings f2032eaa, d74f26e2, 0183622a, ff0950e5, 1c54845c)
-
-New tests in `test/V4Pad.t.sol` on the real v4-core PoolManager: held front-run across every chunk
-is refused and loses; anchor band bounds the cumulative walk and decays for a genuine move; a
-caller inside a PoolManager unlock is rejected and the honest chunk converts; a failed venue
-attempt does not use the interval; dust fills do not refresh the stall clock; real progress above
-the 0.1% floor refreshes it and the 7-day cap bounds it; an untouched game starts its clock on
-first touch and graduates into coin/IMD; a no-return IMD still settles graduation and the two-hop
-burn. The four reviewer proofs pass unchanged.
-
-## Revision 2 (finding 15d57b2a, self-finalizing front-run)
-
-Reproduced first on the real PoolManager with the production key (price 1, 68e18 full-range
-liquidity): twelve wallets, twenty rounds of rolls, game ended and resolved, then one transaction
-swapping 5 or 10 ETH -> IMD and calling `finalize()`. Before the fix the anchor equalled the pushed
-spot (sqrt 0.873 of 2^96 for 10 ETH) and the 0.432 ETH escrow converted into 0.369 IMD, 15% below
-the fair price (the attacker's own result at that escrow size was a small loss; the reviewer's
-figures at a 0.8 ETH escrow are theirs). After the fix the same transactions leave the anchor at
-the fair spot decayed by the ten minutes since the last roll (sqrt 0.99917 of 2^96), every chunk
-is refused, and the attacker ends with 9.813 ETH (10 ETH position) or 4.904 ETH (5 ETH position).
-New tests in `test/V4Pad.t.sol`: `test_frontRunBundledWithFinalizeCannotLowerTheAnchorAndLoses`
-(rolls to the hard end, escrow above 0.75 ETH, 10 ETH push bundled with finalize: anchor
-unchanged, zero chunks fill, attacker below 10 ETH, conversion completes within 5% of the fair
-price with no arbitrage back) and `test_observationOnlyRaisesTheAnchorAndEveryTouchRefreshesIt`.
-Deployment gas after the change: 12,188,384 manifest, 12,962,770 with the later `openPad`, under
-the 13M target with 37k to spare; the redundant finalize-time observation was removed to keep it
-there. Full run: 22 suites, 229 tests, 0 failed, fuzz seed pinned in foundry.toml and also run
-with the verifier's `FOUNDRY_FUZZ_SEED`.
-
-## Gas measurements
-
-| Operation | Local gas |
+| Operation | Gas |
 |---|---:|
-| Atomic raw-CREATE2 manifest, including calldata/intrinsic and probe accounting overhead | **12,188,384** |
-| Later `openPad`, including hook and genesis clones, calldata/intrinsic | **774,386** |
-| Combined deployment and later opening | **12,962,770** |
-| Conversion upkeep on a partially filled game | 458,150 |
-| Direct two-hop burn, thin PVP pool | 267,453 |
-| Crown transition, 16 real pools, both currencies, outgoing king exhausts ETH pushes | 4,795,428 |
-| Crown transition, 18 real pools | 2,829,928 |
-| Crown transition, 60 real pools fully settled | 7,804,512 |
-| Minimum-gas crown bid, 60 real pools | 40 settled immediately; unreached pools retain the outgoing reign |
-| Finalize, 200 living Imps, adverse rank order | 4,057,835 |
-| Largest 32-seat draw chunk at 5,000 entries, cold game | 2,668,320 |
-| All seven draw chunks for 200 seats | 16,251,690 across separate calls |
-| Entry with pending foreign draw/finalize/graduate, estimated call limit | 185,039 |
-| Roll with pending foreign draw, estimated call limit | 187,792 |
-| Roll with pending foreign finalize/graduate, estimated call limit | 191,464 |
+| Atomic raw-CREATE2 manifest, calldata/intrinsic and probe accounting included | **12,016,891** |
+| Later openPad, hook and genesis clones, calldata/intrinsic included | **900,486** |
+| Combined deployment and later opening | **12,917,377** |
+| Crown transition: 16 real pools, both fee currencies, rejecting outgoing king | 4,907,515 |
+| Crown transition: 18 real pools | 2,828,401 |
+| Finalize: 200 living seats, adverse rank order | 4,394,041 |
+| Largest 32-seat draw chunk at 5,000 entries, cold game | 2,688,595 |
+| All seven draw chunks for 200 seats | 16,272,475 across separate calls |
+| Entry with pending foreign draw/finalize/graduation, estimated call limit | 268,574 |
+| Roll with pending foreign draw, estimated call limit | 266,738 |
+| Roll with pending foreign finalize/graduation, estimated call limit | 270,410 |
 
-The deployment test enforces both the **16,777,216** hard ceiling and the **13M** combined target.
-It measures gas inside the raw CREATE2 probe and checks the result exceeds total runtime
-code-deposit cost; a gasleft comparison only around a top-level probe call can omit that cost in
-Foundry 1.8. The rehearsal includes intrinsic/calldata gas and a 23k allowance for probe bookkeeping
-and return overhead. Factory-specific attestation/wrapper overhead is not simulated; the authorized
-pipeline must still enforce the actual transaction ceiling. The combined 13M target has little
-headroom, so changing source, compiler options or constructor policy requires another measurement.
+The atomic rehearsal enforces the **16,777,216** hard deployment ceiling and **13M** combined
+opening target. It includes runtime code-deposit cost, intrinsic/calldata gas and a 23k allowance
+for probe bookkeeping/return overhead. Factory-specific attestation/wrapper overhead is not
+simulated; the authorized deployment service must still simulate its complete transaction. The
+combined target has 82,623 gas of measured headroom. Compiler/source changes require remeasurement.
 
-Operational measurements are call gas unless stated otherwise. Large fixtures sometimes pause
-metering during setup, then resume before the measured operation. Each optional upkeep call retains
-an explicit stipend and reserve. Conversion gets a 500k upkeep call with a 350k isolated venue
-subcall and a pre-attempt gas floor; burn retains its 350k upkeep stipend. Direct calls remain public.
+Upkeep retains 4.5M per game step, 750k distribution, 350k burn, a 100k outer reserve and EIP-150
+margin. Each collection retains 300k and a 100k reserve. Crown settlement retains a 5M minimum
+stipend, EIP-150 margin and 600k outer reserve. ERC20 payout attempts use 40k instead of the old
+30k native-send cap; failed attempts become claimable. Explicit claims forward remaining gas.
+Tests exercise gas exhaustion without allowing optional upkeep to revert entry/roll.
 
-## Artifacts and offline reproducibility
+## Artifacts and manifest
 
-| Application | Initcode bytes, excluding constructor words | Runtime bytes | Static words |
+| Application | Initcode bytes without arguments | Runtime bytes | Constructor words |
 |---|---:|---:|---:|
 | PadToken | 3,044 | 2,999 | 0 |
-| PadGame | 19,282 | 19,241 | 0 |
-| PvPPad | 11,668 | 11,288 | 3 |
-| PadLiquidity | 18,642 | 18,044 | 4 |
-| KingOfThePad | 3,311 | 2,829 | 3 |
+| PadGame | 19,969 | 19,928 | 0 |
+| PvPPad | 13,302 | 12,903 | 3 |
+| PadLiquidity | 14,466 | 14,086 | 3 |
+| KingOfThePad | 4,109 | 3,613 | 3 |
 
-Total runtime is **54,401 bytes**, or **10,880,200** code-deposit gas. Each runtime is below
-24,576 bytes and each initcode plus arguments is below 49,152 bytes. The manifest validator and
-runtime scan find no linked libraries or forbidden application escape opcodes. All constructors
-succeed without code at either external dependency address, and create no token supply, name,
-symbol, hook, game clone, pool or distributor. Both templates remain sealed.
+Total runtime: **53,529 bytes**, or **10,705,800** code-deposit gas. Every runtime is below 24,576
+bytes; each initcode plus arguments is below 49,152 bytes. The validator checks compiled ABI
+constructor order/types, nonpayable surfaces, static string arguments, backward references,
+nonzero lowercase addresses, owner/dev `$owner`, no library links and the protected linear opcode
+scan. PadLiquidity has exactly `(poolManager, pad, imd)`, with no pool-id argument.
+No dependency was installed or changed; offline checks need only the supplied Foundry toolchain
+and repository files. The configuration's metadata flags remain unchanged.
 
-All **85 vendored dependency files** were compared byte-for-byte with the exact pinned base
-archive. No dependency was changed or installed as a submodule. The manifest has five contracts,
-string-valued arguments, nonzero lowercase addresses, backward references, and the canonical
-IMD venue PoolId as one static `bytes32` argument. The constructor reconstructs the full key and
-rejects a mismatching ID before the pad binding. Its key hash matches
-`0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02` in the real-core tests.
+## Imported findings and economic evidence
 
-The manifest repair removes the native-currency/no-hooks zero-address arguments without changing
-their protocol meaning. Constructor regressions reject changes to each of the five key fields,
-a zero PoolId, and an IMD/key mismatch. The atomic CREATE2 test uses the literal supplied PoolId
-and confirms the reconstructed key with no external code present. The offline validator now
-rejects zero-address arguments and validates the `bytes32` word against the compiled ABI.
+The untouched original was rehearsed separately before the changes: its erasure test confirms
+that one alive bail cancels funding; its 24-hour anchor-stall test confirms the unwanted native
+fallback; a false-return IMD fee reproduction confirms `PadPoolCollectionFailed` freezes a crown
+bid. Native-payable behavior and clone/template lifecycle were confirmed by original code/tests.
+All three defects are covered by the replacements above; the native inventory was migrated and
+the explicitly requested clone design was retained. ADAPTATION.md records each disposition.
 
-## Economic evidence and limits
+The new five-wallet sole-buyer case includes one profitable alive bail, four living survivors,
+funded carry release, finalizer/resolver receipts and a dump through coin/IMD. It loses
+**12.160243613483469790 IMD** in aggregate, excluding gas. This is one concrete test, not an
+arbitrage guarantee; AUDIT.md #13 states the mathematical bound and closed-market assumptions.
 
-The six-wallet sybil test includes a profitable individual bail-out, five living survivors,
-funded carry release, the finalizer payment and a dump through coin/IMD and IMD/ETH. It leaves
-**0.433763283181329605 ETH** net on the curve and loses **0.116818580362673557 ETH**, even excluding
-entries and gas. AUDIT.md #13 derives the bound with bail-outs and explicitly states the venue-depth
-and closed-market assumptions; it is not a promise against external price changes or withdrawn LP.
-
-No deployment, broadcast, RPC, live bytecode attestation, explorer submission, Slither/Mythril run,
-or independent contributor audit was performed. Legal review, an independent audit, confirmation of
-live manager/IMD behavior and liquidity, and a target-chain rehearsal remain required before public
-opening. Resolver, seed-capture, conversion and fee-collection operators remain permissionless;
-rewards do not guarantee timely service. See README and AUDIT.md for responsibility and trust details.
+No deployment, broadcast, RPC, live code attestation, explorer submission, Slither/Mythril run or
+independent audit was performed. IMD is a bridged token with unverified source: if transfers stop,
+the pad's IMD waits. Legal review, an independent audit, live dependency review and the deployment
+service's complete transaction simulation remain requirements before public opening.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {BaseTest} from "./Base.t.sol";
@@ -63,7 +64,7 @@ contract PadHandler is Test {
     function enter(uint256 a, uint256 g) external {
         PadGame game = _game(g);
         vm.prank(_actor(a));
-        try game.enter{value: 0.001 ether}() {} catch {}
+        try game.enter() {} catch {}
         _after();
     }
 
@@ -75,11 +76,41 @@ contract PadHandler is Test {
     function roll(uint256 a, uint256 g) external {
         PadGame game = _game(g);
         address who = _actor(a);
-        if (who.balance < 0.002 ether) return;
+        if (imdBalance(who) < 1 ether) return;
         vm.prank(who);
-        try game.roll{value: 0.002 ether}() {
+        try game.roll() {
             successfulRolls += 1;
         } catch {}
+        _after();
+    }
+
+    function bailOut(uint256 a, uint256 g, bool tooHigh) external {
+        PadGame game = _game(g);
+        address who = _actor(a);
+        if (!game.drawComplete() || game.ended() || game.impOf(who) == 0 || game.erased(who)) return;
+        bool alive = game.isAlive(game.impOf(who) - 1);
+        uint256 aliveBails = game.bailedAliveCount();
+        uint256 coins = PadToken(game.token()).balanceOf(who);
+        uint256 value = game.quoteSell(coins);
+        uint256 cost = game.curveSpent(who);
+        uint256 payout = value >= cost ? cost + (value - cost) / 2 : value * 90 / 100;
+        uint256 raised = game.imdRaised();
+        uint256 income = game.rollPot();
+        uint256 before = imdBalance(who) + game.claimable(who);
+        vm.prank(who);
+        if (tooHigh) {
+            vm.expectRevert();
+            game.bailOut(payout + 1);
+            assertEq(game.imdRaised(), raised);
+        } else {
+            game.bailOut(payout);
+            assertTrue(game.erased(who));
+            assertEq(game.bailedAliveCount(), aliveBails + (alive ? 1 : 0));
+            assertEq(game.imdRaised(), raised - value);
+            assertEq(game.rollPot(), income);
+            assertEq(imdBalance(who) + game.claimable(who), before + payout);
+            assertEq(PadToken(game.token()).balanceOf(who), 0);
+        }
         _after();
     }
 
@@ -137,7 +168,7 @@ contract PadHandler is Test {
 
     function claimLiquidity(uint256 a) external {
         vm.prank(_actor(a));
-        try liq.claim() {} catch {}
+        try liq.claim(TEST_IMD) {} catch {}
         _after();
     }
 
@@ -150,14 +181,14 @@ contract PadHandler is Test {
     /// @dev Nobody but the pad may top up a pot: a donation from any actor (players, dev, the king
     /// contract's address is not an actor) must be refused whatever the game's state.
     function fundPot(uint256 a, uint256 g, uint256 amount) external {
-        amount = bound(amount, 0, 0.5 ether);
+        amount = bound(amount, 0, 200.0 ether);
         address who = _actor(a);
-        if (who.balance < amount) return;
+        if (imdBalance(who) < amount) return;
         PadGame game = _game(g);
         uint256 potBefore = game.pot();
         uint256 fundedBefore = game.fundedPot();
         vm.prank(who);
-        try game.fundPot{value: amount}() {
+        try game.fundPot(amount) {
             assertTrue(false, "stranger funded a pot");
         } catch Error(string memory reason) {
             assertEq(reason, "not pad");
@@ -190,37 +221,37 @@ contract PadHandler is Test {
     }
 
     function fundCarry(uint256 a, uint256 amount) external {
-        amount = bound(amount, 0, 0.5 ether);
+        amount = bound(amount, 0, 200.0 ether);
         address who = _actor(a);
-        if (who.balance < amount) return;
+        if (imdBalance(who) < amount) return;
         vm.prank(who);
-        pad.fundCarry{value: amount}();
+        pad.fundCarry(amount);
         _after();
     }
 
     function fundBurn(uint256 a, uint256 amount) external {
-        amount = bound(amount, 0, 0.5 ether);
+        amount = bound(amount, 0, 200.0 ether);
         address who = _actor(a);
-        if (who.balance < amount) return;
+        if (imdBalance(who) < amount) return;
         vm.prank(who);
-        liq.fundBurn{value: amount}();
+        pad.burn(amount);
         _after();
     }
 
     function takeCrown(uint256 a, uint256 amount) external {
-        amount = bound(amount, 0.005 ether, 3 ether);
+        amount = bound(amount, 2.0 ether, 1200 ether);
         address who = _actor(a);
-        if (who.balance < amount) return;
+        if (imdBalance(who) < amount) return;
         address prevKing = king.king();
         uint256 prevBid = king.bid();
         uint256 prevCrownedAt = king.crownedAt();
         bool genesisOk = pad.genesisGraduated();
         vm.prank(who);
-        try king.takeCrown{value: amount}() {
+        try king.takeCrown(amount) {
             successfulCrowns += 1;
             assertTrue(genesisOk, "crown before genesis graduated");
             if (prevKing == address(0)) {
-                assertGe(amount, 0.01 ether, "first bid below minimum");
+                assertGe(amount, 4.0 ether, "first bid below minimum");
             } else {
                 assertGe(amount, prevBid * 11_000 / 10_000, "bid below 110%");
                 assertGe(vm.getBlockTimestamp(), prevCrownedAt + 1 hours, "bid inside the hold");
@@ -274,12 +305,12 @@ contract PadHandler is Test {
     function creditFees(uint256 poolSeed, uint256 f0, uint256 f1) external {
         uint256 count = liq.poolCount();
         if (count == 0) return;
-        f0 = bound(f0, 0, 0.05 ether);
+        f0 = bound(f0, 0, 20.0 ether);
         PadLiquidity.Pool memory p = liq.getPool(poolSeed % count);
         PadToken t = PadToken(p.token);
         uint256 deadBal = t.balanceOf(0x000000000000000000000000000000000000dEaD);
         f1 = bound(f1, 0, deadBal);
-        vm.deal(address(router), address(router).balance + f0);
+        imdDeal(address(router), imdBalance(address(router)) + f0);
         externalEth += f0;
         if (f1 != 0) {
             vm.prank(0x000000000000000000000000000000000000dEaD);
@@ -348,18 +379,18 @@ contract InvariantTest is BaseTest {
     Rejector rejector;
     uint256 initialEth;
 
-    function setUp() public override {
+    function setUp() public virtual override {
         super.setUp();
         openPad();
         handler = new PadHandler(pad, liq, king, arb, pm, OWNER);
         rejector = new Rejector();
         for (uint256 i; i < 6; ++i) {
-            vm.deal(players[i], 100 ether);
+            imdDeal(players[i], 40000 ether);
             handler.addActor(players[i]);
         }
-        vm.deal(address(rejector), 100 ether);
+        imdDeal(address(rejector), 40000 ether);
         handler.addActor(address(rejector));
-        vm.deal(OWNER, 100 ether);
+        imdDeal(OWNER, 40000 ether);
         handler.addActor(OWNER);
         initialEth = _systemEth();
 
@@ -386,40 +417,37 @@ contract InvariantTest is BaseTest {
         sels[18] = PadHandler.creditFees.selector;
         sels[19] = PadHandler.draw.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: sels}));
-        bytes4[] memory more = new bytes4[](4);
+        bytes4[] memory more = new bytes4[](5);
         more[0] = PadHandler.burnChunk.selector;
         more[1] = PadHandler.fundBurn.selector;
         more[2] = PadHandler.tokenTransfer.selector;
         more[3] = PadHandler.restartGenesis.selector;
+        more[4] = PadHandler.bailOut.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: more}));
     }
 
     // ---- value conservation ----------------------------------------------------------------------
     /// @notice Each game's balance is exactly what it owes: the pot, the curve ETH until graduation, and
     /// the failed pushes waiting to be claimed.
-    function _escrowStarted(PadGame game) internal view returns (bool started) {
-        (,,,,, started,) = liq.conversions(address(game));
-    }
-
     function invariant_gameBalanceEqualsObligations() public view {
         uint256 n = pad.launchCount();
         for (uint256 i = 1; i <= n; ++i) {
             PadGame g = PadGame(pad.gameOf(i));
-            uint256 owed = g.pot() + (_escrowStarted(g) || g.graduated() ? 0 : g.ethRaised()) + g.drawBounty()
-                + g.pendingCount() * g.ROLL_TIP();
+            uint256 owed =
+                g.pot() + (g.graduated() ? 0 : g.imdRaised()) + g.drawBounty() + g.pendingCount() * g.ROLL_TIP();
             for (uint256 a; a < _payeeCount(); ++a) {
                 owed += g.claimable(_payee(a));
             }
-            assertEq(address(g).balance, owed, "game balance != pot + curve + bounty + pending tips + claimables");
+            assertEq(imdBalance(address(g)), owed, "game balance != pot + curve + bounty + pending tips + claimables");
         }
     }
 
     function invariant_liquidityBalanceEqualsObligations() public view {
-        uint256 owed = liq.burnBucket() + liq.totalConversionEth();
+        uint256 owed = liq.burnBucket();
         for (uint256 a; a < _payeeCount(); ++a) {
-            owed += liq.claimable(_payee(a));
+            owed += liq.claimable(TEST_IMD, _payee(a));
         }
-        assertEq(address(liq).balance, owed, "liquidity balance != bucket + claimables");
+        assertEq(imdBalance(address(liq)), owed, "liquidity balance != bucket + claimables");
     }
 
     function invariant_kingHoldsOnlyClaimables() public view {
@@ -427,11 +455,11 @@ contract InvariantTest is BaseTest {
         for (uint256 a; a < _payeeCount(); ++a) {
             owed += king.claimable(_payee(a));
         }
-        assertEq(address(king).balance, owed, "king balance != claimables");
+        assertEq(imdBalance(address(king)), owed, "king balance != claimables");
     }
 
     function invariant_padHoldsOnlyCarryPot() public view {
-        assertEq(address(pad).balance, pad.carryPot());
+        assertEq(imdBalance(address(pad)), pad.carryPot());
     }
 
     function invariant_systemEthConserved() public view {
@@ -470,10 +498,10 @@ contract InvariantTest is BaseTest {
         for (uint256 i = 1; i <= n; ++i) {
             PadGame g = PadGame(pad.gameOf(i));
             assertLe(g.tokensSold(), 800_000_000 ether);
-            assertLe(g.ethRaised(), 4 ether);
+            assertLe(g.imdRaised(), 1600 ether);
             (uint256 vEth, uint256 vTok,) = g.curveState();
-            assertGe(vEth * vTok, 1 ether * 1_000_000_000 ether, "constant product below K");
-            assertEq(g.tokensSold() == 0, g.ethRaised() == 0, "tokens without ETH or ETH without tokens");
+            assertGe(vEth * vTok, 400 ether * 1_000_000_000 ether, "constant product below K");
+            assertEq(g.tokensSold() == 0, g.imdRaised() == 0, "tokens without ETH or ETH without tokens");
         }
     }
 
@@ -505,7 +533,7 @@ contract InvariantTest is BaseTest {
                 assertEq(g.pot(), 0, "pot left after finalize");
             }
             if (g.graduated()) assertTrue(g.finalized(), "graduated before finalize");
-            if (g.failed()) assertTrue(g.graduated() && g.ethRaised() == 0, "failed with ETH raised");
+            if (g.failed()) assertTrue(g.graduated() && g.imdRaised() == 0, "failed with ETH raised");
             if (g.bellAt() != 0) assertTrue(g.ended(), "bell without end");
         }
     }
@@ -528,9 +556,9 @@ contract InvariantTest is BaseTest {
         if (pad.genesisGraduated()) assertFalse(pad.genesisFailed(), "graduated genesis reads as failed");
         if (king.king() != address(0)) {
             assertTrue(pad.genesisGraduated(), "king without graduated genesis");
-            assertGe(king.bid(), 0.01 ether);
+            assertGe(king.bid(), 4.0 ether);
         }
-        if (liq.totalBurnedEth() != 0) assertTrue(pad.genesisGraduated(), "burn before PvP pool");
+        if (liq.totalBurnedIMD() != 0) assertTrue(pad.genesisGraduated(), "burn before PvP pool");
         assertTrue(pad.opened());
     }
 
@@ -541,7 +569,7 @@ contract InvariantTest is BaseTest {
         for (uint256 i = 1; i <= n; ++i) {
             PadGame g = PadGame(pad.gameOf(i));
             assertLe(g.fundedPot(), g.pot(), "funded above the pot");
-            assertEq(g.rollPot(), g.pot() - g.fundedPot());
+            assertLe(g.rollPot(), g.pot() - g.fundedPot());
             (, uint256 weight) = g.isLiveForKing();
             assertEq(weight, g.rollPot(), "king weight is the roll income");
             if (g.finalized()) assertEq(g.fundedPot(), 0, "funded left after finalize");
@@ -569,12 +597,12 @@ contract InvariantTest is BaseTest {
 
     function _systemEth() internal view returns (uint256 total) {
         for (uint256 a; a < _payeeCount(); ++a) {
-            total += _payee(a).balance;
+            total += imdBalance(_payee(a));
         }
         uint256 n = pad.launchCount();
         for (uint256 i = 1; i <= n; ++i) {
-            total += pad.gameOf(i).balance;
+            total += imdBalance(pad.gameOf(i));
         }
-        total += address(liq).balance + address(pad).balance + address(pm).balance + DEAD.balance;
+        total += imdBalance(address(liq)) + imdBalance(address(pad)) + imdBalance(address(pm)) + imdBalance(DEAD);
     }
 }

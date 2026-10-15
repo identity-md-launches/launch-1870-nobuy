@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadGame} from "../src/PadGame.sol";
@@ -18,13 +19,13 @@ contract AuditV3CarryUpkeepTest is BaseTest {
     }
 
     function test_fiveWalletCarryChainOnlyPullsUnusedCapAtFinalize() public {
-        vm.deal(address(this), 2 ether);
-        pad.fundCarry{value: 1 ether}(); // permissionless, as the audit observed
+        imdDeal(address(this), 800 ether);
+        pad.fundCarry(400 ether); // permissionless, as the audit observed
         PadGame a = PadGame(pad.gameOf(pad.launch("A", "A", "")));
         mintAll(a, 5);
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
-        assertEq(a.fundedPot(), 0.005 ether, "king share retains v2 routing");
+        king.takeCrown(4.0 ether);
+        assertEq(a.fundedPot(), 2.0 ether, "king share retains v2 routing");
         advance(10 minutes);
         for (uint256 cycle; cycle < 3; ++cycle) {
             uint256 carryBefore = pad.carryPot();
@@ -65,13 +66,13 @@ contract AuditV3CarryUpkeepTest is BaseTest {
             assertEq(pad.carryPot(), afterFinalize, "no second pull");
             a = b;
         }
-        assertGt(pad.carryPot(), 0.97 ether, "the chain cannot park the full carry in any game");
-        assertEq(address(pad).balance, pad.carryPot());
+        assertGt(pad.carryPot(), 388.0 ether, "the chain cannot park the full carry in any game");
+        assertEq(imdBalance(address(pad)), pad.carryPot());
     }
 
     function test_fiveWalletNoRollChainNeverTakesCarry() public {
-        vm.deal(address(this), 1 ether);
-        pad.fundCarry{value: 1 ether}();
+        imdDeal(address(this), 400 ether);
+        pad.fundCarry(400 ether);
         uint256 carry = pad.carryPot();
         PadGame a = PadGame(pad.gameOf(pad.launch("Idle A", "A", "")));
         mintAll(a, 5);
@@ -96,9 +97,9 @@ contract AuditV3CarryUpkeepTest is BaseTest {
         foreign = PadGame(pad.gameOf(pad.launch("Work", "W", "")));
         for (uint256 i; i < 200; ++i) {
             address who = address(uint160(0x987000 + i));
-            vm.deal(who, 1 ether);
+            imdDeal(who, 400 ether);
             vm.prank(who);
-            foreign.enter{value: 0.001 ether}();
+            foreign.enter();
         }
         // Keep the local roller alive while the foreign signup runs.
         vm.warp(foreign.signupEnd() - 100);
@@ -133,12 +134,12 @@ contract AuditV3CarryUpkeepTest is BaseTest {
         uint256 low = 30_000;
         high = 500_000;
         bytes memory data = entry ? abi.encodeCall(PadGame.enter, ()) : abi.encodeCall(PadGame.roll, ());
-        uint256 value = entry ? 0.001 ether : 0.002 ether;
+        uint256 value = entry ? 0.5 ether : 1 ether;
         while (high - low > 1000) {
             uint256 snap = vm.snapshotState();
             uint256 mid = (low + high) / 2;
             vm.prank(actor);
-            (bool ok,) = address(g).call{gas: mid, value: value}(data);
+            (bool ok,) = address(g).call{gas: mid}(data);
             vm.revertToState(snap);
             if (ok) high = mid;
             else low = mid;
@@ -154,9 +155,9 @@ contract AuditV3CarryUpkeepTest is BaseTest {
         uint256 entryGas = _ownGasEstimate(entryGame, players[10], true);
         uint256 rollGas = _ownGasEstimate(rollGame, players[0], false);
         vm.prank(players[10]);
-        entryGame.enter{gas: entryGas, value: 0.001 ether}();
+        entryGame.enter{gas: entryGas}();
         vm.prank(players[0]);
-        rollGame.roll{gas: rollGas, value: 0.002 ether}();
+        rollGame.roll{gas: rollGas}();
         assertEq(entryGame.entryCount(), 1);
         assertEq(rollGame.rollCount(), 2);
         assertLt(entryGas, 500_000);
@@ -185,7 +186,7 @@ contract AuditV3CarryUpkeepTest is BaseTest {
         ExhaustUpkeepGas eater = new ExhaustUpkeepGas();
         vm.etch(address(foreign), address(eater).code);
         vm.prank(players[10]);
-        entryGame.enter{gas: 5_100_000, value: 0.001 ether}();
+        entryGame.enter{gas: 5_100_000}();
         assertEq(entryGame.entryOf(players[10]), 1);
     }
 }

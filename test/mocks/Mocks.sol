@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, TEST_IMD} from "./IMD.sol";
 
 /// @notice Test stand-in for the ArbSys precompile at 0x64. Block number is set by tests; hashes are
 /// deterministic from the block number and only served inside the 256-block window, as on Arbitrum.
@@ -26,6 +27,10 @@ contract MockArbSys {
 
 /// @notice Receiver that rejects ETH, to exercise the claimable fallback.
 contract Rejector {
+    constructor() {
+        TestIMD(TEST_IMD).setBlocked(address(this), true);
+    }
+
     receive() external payable {
         revert("no");
     }

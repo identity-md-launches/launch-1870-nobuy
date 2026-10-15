@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest, OneShotDeployer} from "./Base.t.sol";
 import {PadToken} from "../src/PadToken.sol";
@@ -89,7 +90,7 @@ contract PadTest is BaseTest {
         vm.expectRevert(abi.encodeWithSignature("PadPadNotOpen()"));
         pad.launch("a", "b", "");
         vm.expectRevert(abi.encodeWithSignature("PadKingNotOpen()"));
-        king.takeCrown{value: 1 ether}();
+        king.takeCrown(400 ether);
     }
 
     function test_openPadByOwnerDeploysHookWithExactFlag() public {
@@ -176,7 +177,7 @@ contract PadTest is BaseTest {
         vm.expectRevert(abi.encodeWithSignature("PadGenesisNotGraduated()"));
         pad.launch("Foo", "FOO", "");
         vm.expectRevert(abi.encodeWithSignature("PadKingNotOpen()"));
-        king.takeCrown{value: 1 ether}();
+        king.takeCrown(400 ether);
         graduatePvp();
         vm.prank(players[0]);
         uint256 id = pad.launch("Foo", "FOO", "https://example.com/foo.png");
@@ -191,9 +192,9 @@ contract PadTest is BaseTest {
     function test_failedGenesisIsRestartedByLaunchAndThePadRecovers() public {
         openPad();
         // a stranger mints one free Imp, then nobody rolls: the genesis game fails
-        vm.deal(address(0xBAD), 0.001 ether);
+        imdDeal(address(0xBAD), 0.5 ether);
         vm.prank(address(0xBAD));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         advance(10 minutes);
         advance(10 minutes);
         pvp.poke();
@@ -202,7 +203,7 @@ contract PadTest is BaseTest {
         assertTrue(pad.genesisFailed());
         assertFalse(pad.genesisGraduated());
         vm.expectRevert(abi.encodeWithSignature("PadKingNotOpen()"));
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         // launch() relaunches PvP instead of creating "Next"
         vm.prank(players[0]);
         uint256 id = pad.launch("Next", "NXT", "");
@@ -229,12 +230,12 @@ contract PadTest is BaseTest {
         assertEq(id3, 3);
         assertEq(pad.getLaunch(3).name, "Next");
         vm.prank(players[1]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         assertEq(liq.poolIndexOf(2), 1, "PVP #2 has the pool");
         vm.warp(vm.getBlockTimestamp() + 10 minutes);
-        uint256 burnedBefore = liq.totalBurnedEth();
+        uint256 burnedBefore = liq.totalBurnedIMD();
         liq.burnChunk();
-        assertGt(liq.totalBurnedEth(), burnedBefore, "burn buys the new PVP");
+        assertGt(liq.totalBurnedIMD(), burnedBefore, "burn buys the new PVP");
         assertGt(PadToken(l.token).balanceOf(DEAD), 0);
     }
 
@@ -245,7 +246,7 @@ contract PadTest is BaseTest {
         vm.expectRevert(abi.encodeWithSignature("PadGenesisNotFailed()"));
         pad.restartGenesis();
         vm.prank(players[0]);
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         vm.expectRevert(abi.encodeWithSignature("PadGenesisNotFailed()"));
         pad.restartGenesis();
     }
@@ -265,19 +266,19 @@ contract PadTest is BaseTest {
 
     function test_carryPotStaysThroughNextDraw() public {
         graduatePvp();
-        vm.deal(address(this), 1 ether);
+        imdDeal(address(this), 400 ether);
         uint256 carryBefore = pad.carryPot();
-        pad.fundCarry{value: 0.3 ether}();
-        assertEq(pad.carryPot(), carryBefore + 0.3 ether);
+        pad.fundCarry(120.0 ether);
+        assertEq(pad.carryPot(), carryBefore + 120.0 ether);
         uint256 id = pad.launch("Foo", "FOO", "");
         PadGame g = PadGame(pad.gameOf(id));
         // A launch does not take carry at creation or draw completion
-        assertEq(pad.carryPot(), carryBefore + 0.3 ether);
+        assertEq(pad.carryPot(), carryBefore + 120.0 ether);
         assertEq(g.pot(), 0);
         mintAll(g, 5);
         advance(10 minutes);
         assertTrue(g.drawComplete());
-        assertEq(pad.carryPot(), carryBefore + 0.3 ether);
+        assertEq(pad.carryPot(), carryBefore + 120.0 ether);
         assertEq(g.pot(), 0);
         assertEq(g.fundedPot(), 0);
     }
@@ -292,8 +293,8 @@ contract PadTest is BaseTest {
     }
 
     function test_fundGamesOnlyKing() public {
-        vm.deal(address(this), 1 ether);
+        imdDeal(address(this), 400 ether);
         vm.expectRevert(abi.encodeWithSignature("PadNotKing()"));
-        pad.fundGames{value: 1 ether}();
+        pad.fundGames(400 ether);
     }
 }

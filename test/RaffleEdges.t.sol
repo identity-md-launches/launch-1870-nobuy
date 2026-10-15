@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadGame} from "../src/PadGame.sol";
@@ -19,9 +20,9 @@ contract RaffleEdgesTest is BaseTest {
     function _enterMany(PadGame game, uint256 n) internal {
         for (uint256 i; i < n; ++i) {
             address who = _wallet(i);
-            vm.deal(who, 0.001 ether);
+            imdDeal(who, 0.5 ether);
             vm.prank(who);
-            game.enter{value: 0.001 ether}();
+            game.enter();
         }
     }
 
@@ -66,8 +67,8 @@ contract RaffleEdgesTest is BaseTest {
             assertTrue(pvp.entryOf(who) != 0 && pvp.entryOf(who) <= n, "seat holders are entrants");
         }
         // All but the first fee burn; the first fee paid the seed capturer. Nothing is refundable.
-        assertEq(liq.burnBucket(), (n - 1) * 0.001 ether);
-        assertEq(address(pvp).balance, 0);
+        assertEq(liq.burnBucket(), (n - 1) * 0.5 ether);
+        assertEq(imdBalance(address(pvp)), 0);
     }
 
     // ---- unselected entrant: views and gates after the draw -----------------------------------------
@@ -76,10 +77,10 @@ contract RaffleEdgesTest is BaseTest {
         vm.warp(pvp.signupEnd());
         assertEq(pvp.status(), 7, "drawing phase before the commit");
         // Entry closes at the exact second signup ends, even before the draw has started.
-        vm.deal(_wallet(999), 0.001 ether);
+        imdDeal(_wallet(999), 0.5 ether);
         vm.prank(_wallet(999));
         vm.expectRevert(abi.encodeWithSignature("PadSignupOver()"));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         pvp.draw(32);
         assertEq(pvp.status(), 7, "drawing phase while committed");
         arb.advance(4);
@@ -99,11 +100,11 @@ contract RaffleEdgesTest is BaseTest {
         vm.startPrank(loser);
         (uint256 entry, uint256 seat, bool complete) = pvp.myEntry();
         assertTrue(entry != 0 && seat == 0 && complete);
-        vm.deal(loser, 0.003 ether);
+        imdDeal(loser, 1.2 ether);
         vm.expectRevert(abi.encodeWithSignature("PadNoImp()"));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         vm.expectRevert(abi.encodeWithSignature("PadOneEntryPerWallet()"));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         vm.stopPrank();
         assertEq(pvp.claimable(loser), 0, "nothing to refund");
         assertFalse(pvp.isAlive(200), "no seat 200");
@@ -125,7 +126,7 @@ contract RaffleEdgesTest is BaseTest {
         assertFalse(pvp.isAlive(idle), "dead at exactly playStart + 10 minutes");
         vm.prank(players[1]);
         vm.expectRevert(abi.encodeWithSignature("PadImpDead()"));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         // The roller is still alive, so the game is not over yet.
         assertFalse(pvp.ended());
         assertEq(pvp.endTime(), start + 60 + 10 minutes, "last activity + 10 minutes");
@@ -142,7 +143,7 @@ contract RaffleEdgesTest is BaseTest {
         arb.advance(4);
         pvp.finalize();
         assertEq(pvp.livingAtEnd(), 0);
-        assertEq(address(pvp).balance, pvp.ethRaised() + gameReserves(pvp), "the whole pot left for the carry");
+        assertEq(imdBalance(address(pvp)), pvp.imdRaised() + gameReserves(pvp), "the whole pot left for the carry");
     }
 
     // ---- hard end: a roll one second before the 50-minute cap works, at the cap it is refused ------
@@ -164,12 +165,12 @@ contract RaffleEdgesTest is BaseTest {
         assertEq(pvp.endTime(), pvp.hardEnd());
         vm.prank(players[0]);
         vm.expectRevert(abi.encodeWithSignature("PadGameOver()"));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         // Ten rolls were accepted in all, each at the exact roll price.
         assertEq(pvp.rollCount(), 10);
         assertEq(
-            pvp.ethRaised() + pvp.pot() + gameReserves(pvp),
-            10 * 0.002 ether,
+            pvp.imdRaised() + pvp.pot() + gameReserves(pvp),
+            10 * 0.98 ether,
             "genesis keeps every wei on the curve or in the pot"
         );
     }
@@ -187,29 +188,29 @@ contract RaffleEdgesTest is BaseTest {
         assertEq(pad.carryPot(), carryBefore, "launching moves nothing out of the carry pot");
 
         mintAll(game, 4);
-        vm.deal(players[7], 2 ether);
+        imdDeal(players[7], 800 ether);
         vm.prank(players[7]);
-        king.takeCrown{value: 1 ether}();
+        king.takeCrown(400 ether);
         // Four entries: not live for the king, the games share went to the carry pot instead.
-        assertEq(pad.carryPot(), carryBefore + 0.5 ether);
+        assertEq(pad.carryPot(), carryBefore + 200.0 ether);
         assertEq(game.fundedPot(), 0);
 
         vm.prank(players[4]);
-        game.enter{value: 0.001 ether}();
+        game.enter();
         (bool live, uint256 weight) = game.isLiveForKing();
         assertTrue(live, "five entries make a signup game live");
         assertEq(weight, 0);
         vm.warp(vm.getBlockTimestamp() + 1 hours);
-        vm.deal(players[8], 2 ether);
+        imdDeal(players[8], 800 ether);
         vm.prank(players[8]);
-        king.takeCrown{value: 1.1 ether}();
-        assertEq(game.fundedPot(), 0.05 ether, "half of the 0.1 ETH extra reached the signup game");
-        assertEq(game.pot(), 0.05 ether);
+        king.takeCrown(440.0 ether);
+        assertEq(game.fundedPot(), 20.0 ether, "half of the 0.1 ETH extra reached the signup game");
+        assertEq(game.pot(), 20.0 ether);
         // The hold hour passed signup; the bid's upkeep already committed the draw of this game.
         assertEq(game.status(), 7);
         assertTrue(game.drawCommitted());
         uint256 carryWaiting = pad.carryPot();
-        assertEq(carryWaiting, carryBefore + 0.5 ether, "the carry still waits in the pad while drawing");
+        assertEq(carryWaiting, carryBefore + 200.0 ether, "the carry still waits in the pad while drawing");
 
         // The draw seats all five without moving any carry.
         arb.advance(4);
@@ -219,7 +220,7 @@ contract RaffleEdgesTest is BaseTest {
         assertEq(game.impCount(), 5);
         assertEq(pad.carryPot(), carryWaiting, "a five-seat draw leaves carry in pad");
         uint256 funded = game.fundedPot();
-        assertEq(funded, 0.05 ether, "only king share is funded ETH during play");
+        assertEq(funded, 20.0 ether, "only king share is funded ETH during play");
         assertEq(game.pot(), funded, "nobody rolled: the pot is funded ETH only");
         // Nobody rolls; the game ends with no living Imps.
         vm.warp(game.playStart() + 10 minutes);
@@ -230,7 +231,7 @@ contract RaffleEdgesTest is BaseTest {
         assertEq(game.fundedPot(), 0);
         assertEq(game.livingAtEnd(), 0);
         assertEq(pad.carryPot(), carryPending + funded, "every funded wei returned to the carry pot");
-        assertEq(address(game).balance, 0);
+        assertEq(imdBalance(address(game)), 0);
         for (uint256 i; i < 5; ++i) {
             assertEq(game.claimable(players[i]), 0);
         }

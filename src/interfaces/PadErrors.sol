@@ -3,7 +3,7 @@ pragma solidity 0.8.26;
 
 /// @notice Compact, descriptive revert selectors keep the atomic manifest within its gas target.
 library PadErrors {
-    error PadConversionGas();
+    error PadNotOwner();
     error PadAllowance();
     error PadAmount();
     error PadBadAction();
@@ -15,9 +15,6 @@ library PadErrors {
     error PadCloneFailed();
     error PadCoins();
     error PadCollectionGas();
-    error PadConversionInterval();
-    error PadConversionPending();
-    error PadConversionStartedOrEmpty();
     error PadCooldown();
     error PadDeltaSign();
     error PadDeployed();
@@ -30,8 +27,6 @@ library PadErrors {
     error PadGenesisNotGraduated();
     error PadGraduated();
     error PadHookFlags();
-    error PadIMDFees();
-    error PadIMDKey();
     error PadImpDead();
     error PadInitialized();
     error PadKingHolds();
@@ -47,7 +42,6 @@ library PadErrors {
     error PadNoKing();
     error PadNoLiquidity();
     error PadNotBound();
-    error PadNotConverting();
     error PadNotFinalizable();
     error PadNotGame();
     error PadNotGameOrUnlocked();
@@ -77,11 +71,9 @@ library PadErrors {
     error PadSwapSign();
     error PadTicker();
     error PadToken();
-    error PadTokenFees();
     error PadUrl();
     error PadZero();
     error PadZeroChunk();
-    error PadZeroIMD();
     error PadZeroOutput();
     error PadZeroTo();
 }

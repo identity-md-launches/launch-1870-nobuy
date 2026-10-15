@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadGame} from "../src/PadGame.sol";
@@ -7,13 +8,29 @@ import {PadLib} from "../src/libs/PadLib.sol";
 import {PadToken} from "../src/PadToken.sol";
 
 contract EntryWallet {
+    constructor() {
+        imdDeal(address(this), 400 ether);
+    }
+
     function enter(PadGame game) external payable {
-        game.enter{value: msg.value}();
+        game.enter();
     }
 }
 
 /// @dev Isolated clone fixture to exercise the gate and a malicious burn callback.
 contract EntryGate {
+    function unit() external pure returns (uint256) {
+        return 1 ether;
+    }
+
+    function imd() external pure returns (address) {
+        return TEST_IMD;
+    }
+
+    function pull(address from, uint256 amount) external {
+        TestIMD(TEST_IMD).setAllowance(from, address(this), type(uint256).max);
+        PadLib.pullExact(TEST_IMD, from, msg.sender, amount);
+    }
     bool public opened;
 
     function create(address template, address burn) external returns (PadGame game) {
@@ -40,9 +57,10 @@ contract ReentrantBurn {
         entrant = entrant_;
     }
 
-    function fundBurn() external payable {
+    function fundBurn(uint256 amount) external {
+        PadLib.pullExact(TEST_IMD, msg.sender, address(this), amount);
         effectsVisible = game.entryCount() == 2 && game.entryOf(entrant) == 2;
-        (bool ok,) = address(game).call{value: msg.value}(abi.encodeCall(PadGame.enter, ()));
+        (bool ok,) = address(game).call(abi.encodeCall(PadGame.enter, ()));
         blocked = !ok;
     }
 }
@@ -56,9 +74,9 @@ contract RaffleTest is BaseTest {
     function _enterMany(PadGame game, uint256 n) internal {
         for (uint256 i; i < n; ++i) {
             address who = address(uint160(0x100000 + i));
-            vm.deal(who, 1 ether);
+            imdDeal(who, 400 ether);
             vm.prank(who);
-            game.enter{value: 0.001 ether}();
+            game.enter();
         }
     }
 
@@ -83,66 +101,65 @@ contract RaffleTest is BaseTest {
         burn.arm(game, players[0]);
         vm.prank(players[0]);
         vm.expectRevert(abi.encodeWithSignature("PadPadNotOpen()"));
-        game.enter{value: 0.001 ether}();
+        game.enter();
         assertEq(game.entryCount(), 0);
         gate.open();
         vm.prank(players[0]);
-        game.enter{value: 0.001 ether}();
+        game.enter();
         burn.arm(game, players[1]);
         vm.prank(players[1]);
-        game.enter{value: 0.001 ether}();
+        game.enter();
         assertTrue(burn.blocked());
         assertTrue(burn.effectsVisible(), "CEI before external funding call");
         assertEq(game.entryCount(), 2);
-        assertEq(address(burn).balance, 0.001 ether);
+        assertEq(imdBalance(address(burn)), 0.5 ether);
         assertEq(game.entryOf(address(burn)), 0);
     }
 
     function test_entryFeesAlsoFundBurnOnOrdinaryGames() public {
         graduatePvp();
         PadGame game = PadGame(pad.gameOf(pad.launch("Next", "NXT", "")));
-        uint256 accounted = liq.burnBucket() + liq.totalBurnedEth();
+        uint256 accounted = liq.burnBucket() + liq.totalBurnedIMD();
         uint256 potBefore = game.pot();
         vm.prank(players[9]);
-        game.enter{value: 0.001 ether}();
-        assertEq(liq.burnBucket() + liq.totalBurnedEth() - accounted, 0);
+        game.enter();
+        assertEq(liq.burnBucket() + liq.totalBurnedIMD() - accounted, 0);
         assertEq(game.pot(), potBefore);
-        assertEq(game.ethRaised(), 0);
-        assertEq(game.drawBounty(), 0.001 ether);
+        assertEq(game.imdRaised(), 0);
+        assertEq(game.drawBounty(), 0.5 ether);
     }
 
     function test_entryExactFeeOnePerWalletAndNoRefund() public {
-        vm.startPrank(players[0]);
-        vm.expectRevert(abi.encodeWithSignature("PadEntryPrice()"));
+        imd.setAllowance(players[0], address(pad), 0);
+        vm.prank(players[0]);
+        vm.expectRevert(abi.encodeWithSignature("PadToken()"));
         pvp.enter();
-        vm.expectRevert(abi.encodeWithSignature("PadEntryPrice()"));
-        pvp.enter{value: 0.001 ether - 1}();
-        vm.expectRevert(abi.encodeWithSignature("PadEntryPrice()"));
-        pvp.enter{value: 0.001 ether + 1}();
-        pvp.enter{value: 0.001 ether}();
+        imd.setAllowance(players[0], address(pad), type(uint256).max);
+        vm.startPrank(players[0]);
+        pvp.enter();
         vm.expectRevert(abi.encodeWithSignature("PadOneEntryPerWallet()"));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         vm.expectRevert(abi.encodeWithSignature("PadNothing()"));
         pvp.claim();
         vm.stopPrank();
-        assertEq(players[0].balance, 9.999 ether);
+        assertEq(imdBalance(players[0]), 3999.5 ether);
         assertEq(pvp.entryCount(), 1);
         assertEq(pvp.impCount(), 0);
         assertEq(pvp.pot(), 0);
-        assertEq(pvp.ethRaised(), 0);
-        assertEq(address(pvp).balance, 0.001 ether);
-        assertEq(pvp.drawBounty(), 0.001 ether);
+        assertEq(pvp.imdRaised(), 0);
+        assertEq(imdBalance(address(pvp)), 0.5 ether);
+        assertEq(pvp.drawBounty(), 0.5 ether);
         assertEq(liq.burnBucket(), 0);
-        assertEq(address(liq).balance, liq.burnBucket());
+        assertEq(imdBalance(address(liq)), liq.burnBucket());
         liq.burnChunk();
-        assertEq(liq.totalBurnedEth(), 0);
+        assertEq(liq.totalBurnedIMD(), 0);
         assertEq(liq.burnBucket(), 0);
     }
 
     function test_contractWalletCanEnterAndViewsArePaged() public {
         EntryWallet wallet = new EntryWallet();
-        vm.deal(address(this), 1 ether);
-        wallet.enter{value: 0.001 ether}(pvp);
+        imdDeal(address(this), 400 ether);
+        wallet.enter{value: 0.5 ether}(pvp);
         _enterMany(pvp, 205);
         assertEq(pvp.entryOf(address(wallet)), 1);
         address[] memory page = pvp.getEntrants(0, type(uint256).max);
@@ -178,11 +195,11 @@ contract RaffleTest is BaseTest {
         assertEq(pvp.status(), 1);
         vm.warp(pvp.signupEnd() - 1);
         vm.prank(players[0]);
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         vm.warp(pvp.signupEnd());
         vm.prank(players[1]);
         vm.expectRevert(abi.encodeWithSignature("PadSignupOver()"));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         assertEq(pvp.status(), 7);
         assertFalse(pvp.ended());
     }
@@ -225,8 +242,8 @@ contract RaffleTest is BaseTest {
         assertLt(maxGas, 3_000_000);
         assertLt(totalGas, 17_000_000);
         assertEq(pvp.impCount(), 200);
-        assertEq(liq.burnBucket(), 4.999 ether);
-        assertEq(address(pvp).balance, 0);
+        assertEq(liq.burnBucket(), 2499.5 ether);
+        assertEq(imdBalance(address(pvp)), 0);
         uint256 seats;
         for (uint256 i; i < 5000; ++i) {
             address who = address(uint160(0x100000 + i));
@@ -299,14 +316,14 @@ contract RaffleTest is BaseTest {
         _enterMany(pvp, 201);
         vm.prank(address(0x100000));
         vm.expectRevert(abi.encodeWithSignature("PadNotPlaying()"));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         _commit(pvp);
         arb.advance(4);
         pvp.draw(1);
         address first = pvp.getImp(0).owner;
         vm.prank(first);
         vm.expectRevert(abi.encodeWithSignature("PadNotPlaying()"));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         assertFalse(pvp.isAlive(0));
         vm.warp(vm.getBlockTimestamp() + 3 hours);
         assertFalse(pvp.ended());
@@ -316,7 +333,7 @@ contract RaffleTest is BaseTest {
         assertEq(pvp.endTime(), vm.getBlockTimestamp() + 10 minutes);
         assertTrue(pvp.isAlive(0));
         vm.prank(first);
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
     }
 
     function test_upkeepCommitsThenDrawsInBoundedChunksAndKingCountsEntries() public {
@@ -324,7 +341,7 @@ contract RaffleTest is BaseTest {
         (bool live,) = pvp.isLiveForKing();
         assertFalse(live);
         vm.prank(players[0]);
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         (live,) = pvp.isLiveForKing();
         assertTrue(live);
         vm.warp(pvp.signupEnd());
@@ -343,11 +360,11 @@ contract RaffleTest is BaseTest {
     }
 
     function test_failedGenesisGriefCostsOneFeeEveryRoundAndNeverRefunds() public {
-        vm.deal(players[0], 1 ether);
+        imdDeal(players[0], 400 ether);
         for (uint256 r; r < 3; ++r) {
             PadGame game = PadGame(pad.gameOf(pad.genesisId()));
             vm.prank(players[0]);
-            game.enter{value: 0.001 ether}();
+            game.enter();
             _commit(game);
             _complete(game, 32);
             vm.warp(game.playStart() + 10 minutes);
@@ -355,11 +372,11 @@ contract RaffleTest is BaseTest {
             graduateGame(game);
             assertTrue(game.failed());
             assertEq(game.claimable(players[0]), 0);
-            assertEq(liq.totalBurnedEth(), 0);
+            assertEq(liq.totalBurnedIMD(), 0);
             assertEq(liq.burnBucket(), 0);
             pad.restartGenesis();
         }
-        assertEq(players[0].balance, 0.997 ether);
+        assertEq(imdBalance(players[0]), 398.5 ether);
         assertEq(pad.genesisId(), 4);
     }
 

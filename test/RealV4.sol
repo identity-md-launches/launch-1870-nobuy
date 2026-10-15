@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
+import {PadLib} from "../src/libs/PadLib.sol";
 import {PoolManager} from "../lib/v4-core/src/PoolManager.sol";
 import {IPoolManager as V4Manager} from "../lib/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey as V4Key} from "../lib/v4-core/src/types/PoolKey.sol";
@@ -25,7 +27,14 @@ contract V4Router is IUnlockCallback {
     receive() external payable {}
 
     function donate(PoolKey memory key, uint256 ethAmount, uint256 tokenAmount) external {
-        manager.unlock(abi.encode(uint8(0), key, ethAmount, tokenAmount));
+        manager.unlock(
+            abi.encode(
+                uint8(0),
+                key,
+                key.currency0 == TEST_IMD ? ethAmount : tokenAmount,
+                key.currency0 == TEST_IMD ? tokenAmount : ethAmount
+            )
+        );
     }
 
     function add(PoolKey memory key, uint256 liquidity) external {
@@ -37,7 +46,8 @@ contract V4Router is IUnlockCallback {
     }
 
     function trade(PoolKey memory key, bool zeroForOne, uint256 amount) external returns (int256) {
-        return abi.decode(manager.unlock(abi.encode(uint8(zeroForOne ? 2 : 3), key, amount, uint256(0))), (int256));
+        bool direction = zeroForOne == (key.currency0 == TEST_IMD);
+        return abi.decode(manager.unlock(abi.encode(uint8(direction ? 2 : 3), key, amount, uint256(0))), (int256));
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
@@ -71,10 +81,10 @@ contract V4Router is IUnlockCallback {
             uint256 amount = uint256(uint128(-delta));
             if (currency == address(0)) {
                 manager.sync(address(0));
-                manager.settle{value: amount}();
+                V4Manager(address(manager)).settle{value: amount}();
             } else {
                 manager.sync(currency);
-                require(IERC20Min(currency).transfer(address(manager), amount));
+                PadLib.transfer(currency, address(manager), amount);
                 manager.settle();
             }
         } else if (delta > 0) {

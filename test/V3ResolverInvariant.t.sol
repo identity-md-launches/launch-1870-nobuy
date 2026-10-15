@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {BaseTest} from "./Base.t.sol";
@@ -37,7 +38,7 @@ contract ResolverLedgerHandler is Test {
         if (game.ended() || !game.isAlive(seat)) return;
         if (imp.lastRoll != 0 && vm.getBlockTimestamp() < imp.lastRoll + 60) return;
         vm.prank(actor);
-        game.roll{value: 0.002 ether}();
+        game.roll();
         ++paidRolls;
         _recordResolutions(actor);
     }
@@ -65,7 +66,7 @@ contract ResolverLedgerHandler is Test {
         (bool ok, bytes memory reason) = address(game).call(abi.encodeCall(PadGame.claim, ()));
         if (owed == 0 || reject) {
             assertFalse(ok, "empty or rejected claim must revert");
-            assertEq(reason, abi.encodeWithSignature(owed == 0 ? "PadNothing()" : "PadClaimFailed()"));
+            assertEq(reason, abi.encodeWithSignature(owed == 0 ? "PadNothing()" : "PadToken()"));
             assertEq(game.claimable(address(actor)), owed, "failed claim erased a resolver debt");
             assertEq(actor.received(), receivedBefore);
             if (owed != 0) ++claimsRejected;
@@ -89,7 +90,7 @@ contract ResolverLedgerHandler is Test {
                 settledRoll[i] = keccak256(abi.encode(r));
                 ++resolvedRolls;
                 if (r.expired) ++expiredRolls;
-                else tipsEarned[resolver] += 0.00002 ether;
+                else tipsEarned[resolver] += 0.01 ether;
             }
         }
     }
@@ -110,9 +111,9 @@ contract V3ResolverInvariantTest is BaseTest {
         game = PadGame(pad.gameOf(pad.launch("Resolver ledger", "RES", "")));
         for (uint256 i; i < actors.length; ++i) {
             actors[i] = new AccountingRecipient();
-            vm.deal(address(actors[i]), 1 ether);
+            imdDeal(address(actors[i]), 400 ether);
             vm.prank(address(actors[i]));
-            game.enter{value: 0.001 ether}();
+            game.enter();
         }
         vm.warp(game.signupEnd());
         arb.advance(6_000);
@@ -122,7 +123,7 @@ contract V3ResolverInvariantTest is BaseTest {
         assertTrue(game.drawComplete());
         assertEq(game.drawBounty(), 0);
         handler = new ResolverLedgerHandler(game, arb, actors);
-        burnAtStart = liq.burnBucket() + liq.totalBurnedEth();
+        burnAtStart = liq.burnBucket() + liq.totalBurnedIMD();
 
         // Every sequence begins with real roll debt, a paid resolver, and a failed claim. This
         // removes dependence on the fuzzer discovering signup, drawing and resolution in order.
@@ -155,8 +156,8 @@ contract V3ResolverInvariantTest is BaseTest {
             issued += earned;
         }
         assertEq(
-            issued + (handler.expiredRolls() + game.pendingCount()) * 0.00002 ether,
-            handler.paidRolls() * 0.00002 ether,
+            issued + (handler.expiredRolls() + game.pendingCount()) * 0.01 ether,
+            handler.paidRolls() * 0.01 ether,
             "a paid roll lost or duplicated its tip"
         );
         assertEq(handler.resolvedRolls() + game.pendingCount(), handler.paidRolls());
@@ -175,11 +176,11 @@ contract V3ResolverInvariantTest is BaseTest {
             tokenBalances += PadToken(game.token()).balanceOf(address(actors[i]));
         }
         // At most 103 rolls in this campaign, far below the 2,223-roll curve sell-out.
-        assertEq(game.ethRaised(), paid * 0.0018 ether);
-        assertEq(game.pot(), paid * 0.00014 ether + handler.expiredRolls() * 0.00002 ether);
-        assertEq(liq.burnBucket() + liq.totalBurnedEth() - burnAtStart, paid * 0.00004 ether);
+        assertEq(game.imdRaised(), paid * 0.9 ether);
+        assertEq(game.pot(), paid * 0.07 ether + handler.expiredRolls() * 0.01 ether);
+        assertEq(liq.burnBucket() + liq.totalBurnedIMD() - burnAtStart, paid * 0.02 ether);
         assertEq(
-            address(game).balance, game.ethRaised() + game.pot() + outstanding + game.pendingCount() * 0.00002 ether
+            imdBalance(address(game)), game.imdRaised() + game.pot() + outstanding + game.pendingCount() * 0.01 ether
         );
         assertEq(tokenBalances, 1_000_000_000 ether);
         assertFalse(game.finalized(), "focused campaign unexpectedly finalized through unrelated upkeep");
@@ -202,7 +203,14 @@ contract V3ResolverInvariantTest is BaseTest {
         graduateGame(game);
         assertTrue(game.graduated());
         assertFalse(game.failed());
-        assertEq(address(game).balance, 0, "settled game stranded ETH after graduation");
+        for (uint256 i; i < actors.length; ++i) {
+            if (game.claimable(address(actors[i])) != 0) {
+                actors[i].setRejecting(false);
+                vm.prank(address(actors[i]));
+                game.claim();
+            }
+        }
+        assertEq(imdBalance(address(game)), 0, "settled game stranded ETH after graduation");
         assertEq(PadToken(game.token()).balanceOf(address(game)), 0);
     }
 }

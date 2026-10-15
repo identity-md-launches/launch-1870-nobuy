@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {Test} from "forge-std/Test.sol";
 import {BaseTest} from "./Base.t.sol";
@@ -19,7 +20,7 @@ contract KingFeeLedgerHandler is Test {
     V4Router public immutable router;
     MockArbSys public immutable arb;
     AccountingRecipient[4] public actors;
-    mapping(address => uint256) public ethFees;
+    mapping(address => uint256) public imdFees;
     mapping(address => uint256) public tokenFees;
     mapping(address => uint256) public refunds;
     mapping(address => uint256) public donatedTokens;
@@ -51,11 +52,11 @@ contract KingFeeLedgerHandler is Test {
 
     function donate(uint256 actorSeed, uint256 ethSeed, uint256 tokenSeed) public {
         address donor = address(actors[actorSeed % actors.length]);
-        uint256 e = bound(ethSeed, 1, 0.001 ether);
+        uint256 e = bound(ethSeed, 1, 0.5 ether);
         uint256 t = bound(tokenSeed, 0, token.balanceOf(donor));
         if (t > 1000 ether) t = 1000 ether;
         vm.prank(donor);
-        (bool funded,) = address(router).call{value: e}("");
+        bool funded = TestIMD(TEST_IMD).transfer(address(router), e);
         assertTrue(funded);
         vm.prank(donor);
         token.transfer(address(router), t);
@@ -75,8 +76,8 @@ contract KingFeeLedgerHandler is Test {
     function bid(uint256 actorSeed, uint256 extraSeed, bool rejectPushes) public {
         AccountingRecipient next = actors[actorSeed % actors.length];
         next.setRejecting(rejectPushes);
-        uint256 value = crown.nextMinBid() + bound(extraSeed, 0, 0.0001 ether);
-        if (value > 1 ether) return;
+        uint256 value = crown.nextMinBid() + bound(extraSeed, 0, 0.04 ether);
+        if (value > 400 ether) return;
         address previous = crown.king();
         uint256 refund = crown.bid();
         if (previous != address(0) && vm.getBlockTimestamp() < crown.challengeOpensAt()) {
@@ -86,7 +87,7 @@ contract KingFeeLedgerHandler is Test {
         }
         PadLiquidity.Pool memory beforePool = liquidity.getPool(0);
         vm.prank(address(next));
-        crown.takeCrown{gas: 7_000_000, value: value}();
+        crown.takeCrown{gas: 7_000_000}(value);
         _recordFees(previous == address(0) ? address(next) : previous, beforePool);
         if (previous != address(0)) refunds[previous] += refund;
         ++successfulBids;
@@ -97,22 +98,22 @@ contract KingFeeLedgerHandler is Test {
     function starveBid(uint256 actorSeed, uint256 gasSeed) public {
         address challenger = address(actors[actorSeed % actors.length]);
         uint256 value = crown.nextMinBid();
-        if (value > 1 ether) return;
+        if (value > 400 ether) return;
         if (vm.getBlockTimestamp() < crown.challengeOpensAt()) vm.warp(crown.challengeOpensAt());
         uint256 gasLimit = bound(gasSeed, 100_000, 5_500_000);
         address previous = crown.king();
         uint256 oldBid = crown.bid();
-        uint256 oldBalance = challenger.balance;
+        uint256 oldBalance = imdBalance(challenger);
         uint256 cursor = liquidity.distributeCursor();
         PadLiquidity.Pool memory beforePool = liquidity.getPool(0);
         vm.prank(challenger);
         (bool ok, bytes memory reason) =
-            address(crown).call{gas: gasLimit, value: value}(abi.encodeCall(KingOfThePad.takeCrown, ()));
+            address(crown).call{gas: gasLimit}(abi.encodeCall(KingOfThePad.takeCrown, (value)));
         assertFalse(ok, "underfunded settlement accepted the bid");
         assertEq(reason, abi.encodeWithSignature("PadSettlementGas()"));
         assertEq(crown.king(), previous);
         assertEq(crown.bid(), oldBid);
-        assertEq(challenger.balance, oldBalance);
+        assertEq(imdBalance(challenger), oldBalance);
         assertEq(liquidity.distributeCursor(), cursor);
         assertEq(keccak256(abi.encode(liquidity.getPool(0))), keccak256(abi.encode(beforePool)));
         ++starvedBids;
@@ -121,27 +122,30 @@ contract KingFeeLedgerHandler is Test {
     function claim(uint256 actorSeed, bool fromLiquidity, bool reject) public {
         AccountingRecipient actor = actors[actorSeed % actors.length];
         actor.setRejecting(reject);
-        uint256 owed = fromLiquidity ? liquidity.claimable(address(actor)) : crown.claimable(address(actor));
+        uint256 owed = fromLiquidity ? liquidity.claimable(TEST_IMD, address(actor)) : crown.claimable(address(actor));
         uint256 receivedBefore = actor.received();
         address target = fromLiquidity ? address(liquidity) : address(crown);
         vm.prank(address(actor));
-        (bool ok, bytes memory reason) = target.call(abi.encodeWithSignature("claim()"));
+        (bool ok, bytes memory reason) = target.call(
+            fromLiquidity ? abi.encodeWithSignature("claim(address)", TEST_IMD) : abi.encodeWithSignature("claim()")
+        );
         if (owed == 0 || reject) {
             assertFalse(ok);
-            assertEq(reason, abi.encodeWithSignature(owed == 0 ? "PadNothing()" : "PadClaimFailed()"));
+            assertEq(reason, abi.encodeWithSignature(owed == 0 ? "PadNothing()" : "PadToken()"));
             if (owed != 0) ++rejectedClaims;
         } else {
             assertTrue(ok, "owed ETH is not withdrawable");
             assertEq(actor.received() - receivedBefore, owed);
             ++successfulClaims;
         }
-        uint256 afterDebt = fromLiquidity ? liquidity.claimable(address(actor)) : crown.claimable(address(actor));
+        uint256 afterDebt =
+            fromLiquidity ? liquidity.claimable(TEST_IMD, address(actor)) : crown.claimable(address(actor));
         assertEq(afterDebt, ok ? 0 : owed, "claim failed to preserve or clear the debt");
     }
 
     function _recordFees(address recipient, PadLiquidity.Pool memory beforePool) private {
         PadLiquidity.Pool memory afterPool = liquidity.getPool(0);
-        ethFees[recipient] += afterPool.ethFees - beforePool.ethFees;
+        imdFees[recipient] += afterPool.imdFees - beforePool.imdFees;
         tokenFees[recipient] += afterPool.tokenFees - beforePool.tokenFees;
         assertEq(afterPool.failures, 0, "healthy pool was incorrectly marked broken");
     }
@@ -160,7 +164,7 @@ contract V3KingFeesInvariantTest is BaseTest {
         graduatePvp();
         for (uint256 i; i < actors.length; ++i) {
             actors[i] = new AccountingRecipient();
-            vm.deal(address(actors[i]), 100 ether);
+            imdDeal(address(actors[i]), 40000 ether);
             vm.prank(players[0]);
             pvpToken.transfer(address(actors[i]), 100_000 ether);
         }
@@ -168,7 +172,7 @@ contract V3KingFeesInvariantTest is BaseTest {
         initialEth = _ethInScope();
         // Seed both claim systems and prove they are usable before randomized calls begin.
         handler.bid(0, 0, true);
-        handler.donate(2, 0.001 ether, 100 ether);
+        handler.donate(2, 0.5 ether, 40000 ether);
         handler.distribute(16, false);
         handler.bid(1, 0, false);
         handler.claim(0, true, true);
@@ -193,11 +197,11 @@ contract V3KingFeesInvariantTest is BaseTest {
         uint256 crownDebt;
         for (uint256 i; i < actors.length; ++i) {
             address actor = address(actors[i]);
-            uint256 feeDebt = liq.claimable(actor);
+            uint256 feeDebt = liq.claimable(TEST_IMD, actor);
             uint256 refundDebt = king.claimable(actor);
             assertEq(
                 actors[i].received() + feeDebt + refundDebt,
-                handler.ethFees(actor) + handler.refunds(actor),
+                handler.imdFees(actor) + handler.refunds(actor),
                 "ETH paid to the wrong reign or lost on rejection"
             );
             assertEq(
@@ -205,15 +209,15 @@ contract V3KingFeesInvariantTest is BaseTest {
                 handler.initialTokens(actor) + handler.tokenFees(actor),
                 "fee token was sold, stashed or misdirected"
             );
-            ethCollected += handler.ethFees(actor);
+            ethCollected += handler.imdFees(actor);
             tokensCollected += handler.tokenFees(actor);
             liquidityDebt += feeDebt;
             crownDebt += refundDebt;
         }
-        assertEq(liq.getPool(0).ethFees, ethCollected);
+        assertEq(liq.getPool(0).imdFees, ethCollected);
         assertEq(liq.getPool(0).tokenFees, tokensCollected);
-        assertEq(address(liq).balance, liq.burnBucket() + liquidityDebt);
-        assertEq(address(king).balance, crownDebt);
+        assertEq(imdBalance(address(liq)), liq.burnBucket() + liquidityDebt);
+        assertEq(imdBalance(address(king)), crownDebt);
         assertEq(pvpToken.balanceOf(address(liq)), 0, "collected tokens stayed behind for another king");
         assertGe(handler.successfulBids(), 2);
         assertGe(handler.successfulClaims(), 2);
@@ -223,8 +227,8 @@ contract V3KingFeesInvariantTest is BaseTest {
 
     function invariant_realV4FeesAndBidsConserveETH() public view {
         assertEq(_ethInScope(), initialEth, "ETH escaped the fee and crown system");
-        assertEq(address(pad).balance, pad.carryPot());
-        assertEq(address(router).balance, 0, "donation router retained ETH");
+        assertEq(imdBalance(address(pad)), pad.carryPot());
+        assertEq(imdBalance(address(router)), 0, "donation router retained ETH");
         assertEq(pvpToken.balanceOf(address(router)), 0, "donation router retained tokens");
     }
 
@@ -236,15 +240,15 @@ contract V3KingFeesInvariantTest is BaseTest {
         }
         invariant_eachReignKeepsItsETHAndTokensIncludingRejectedPayments();
         invariant_realV4FeesAndBidsConserveETH();
-        assertEq(address(king).balance, 0);
-        assertEq(address(liq).balance, liq.burnBucket());
+        assertEq(imdBalance(address(king)), 0);
+        assertEq(imdBalance(address(liq)), liq.burnBucket());
     }
 
     function _ethInScope() private view returns (uint256 value) {
-        value = address(liq).balance + address(king).balance + address(pad).balance + address(pm).balance
-            + address(router).balance + OWNER.balance;
+        value = imdBalance(address(liq)) + imdBalance(address(king)) + imdBalance(address(pad))
+            + imdBalance(address(pm)) + imdBalance(address(router)) + imdBalance(OWNER);
         for (uint256 i; i < actors.length; ++i) {
-            value += address(actors[i]).balance;
+            value += imdBalance(address(actors[i]));
         }
     }
 }

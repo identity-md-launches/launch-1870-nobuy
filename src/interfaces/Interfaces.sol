@@ -44,7 +44,7 @@ interface IPoolManager {
         external
         returns (int256 delta);
     function sync(address currency) external;
-    function settle() external payable returns (uint256);
+    function settle() external returns (uint256);
     function take(address currency, address to, uint256 amount) external;
 }
 
@@ -71,12 +71,11 @@ interface IPadToken is IERC20Min {
 }
 
 interface IPadGame {
-    function prepareConversion() external;
     function finalizedAt() external view returns (uint64);
     function initialize(uint256 launchId, address token_, address liquidity_, bool genesis) external;
     function upkeepStep(address caller) external;
     function resolvePending(uint256 max) external;
-    function fundPot() external payable;
+    function fundPot(uint256 amount) external;
     function isLiveForKing() external view returns (bool live, uint256 pot);
     function graduated() external view returns (bool);
     function failed() external view returns (bool);
@@ -92,7 +91,11 @@ interface IPvPPad {
     function startGenesis() external;
     function upkeep() external;
     function upkeepFor(address caller) external;
-    function fundCarry() external payable;
+    function fundCarry(uint256 amount) external;
+    function pull(address from, uint256 amount) external;
+    function unit() external view returns (uint256);
+    function imd() external view returns (address);
+    function isGame(address game) external view returns (bool);
     function noteFirstEntry(uint256 id) external;
     function takeCarry(uint256 id, uint256 maxAmount) external;
     function genesisGraduated() external view returns (bool);
@@ -103,14 +106,19 @@ interface IPvPPad {
 }
 
 interface IPadLiquidity {
-    function startConversion(uint256 launchId, uint64 finalizedAt) external payable;
-    function convertChunk(address game) external;
-    function observeMarket() external returns (uint256);
-    function canGraduate(address game) external view returns (bool);
     function bindKing() external;
     function deployHook(bytes32 salt) external returns (address);
-    function graduate(uint256 launchId, address token, uint256 tokenAmount, uint256 vEth, uint256 vTok) external payable;
-    function fundBurn() external payable;
+    function graduate(
+        uint256 launchId,
+        address token,
+        uint256 tokenAmount,
+        uint256 quoteAmount,
+        uint256 vIMD,
+        uint256 vTok
+    ) external;
+    function fundBurn(uint256 amount) external;
+    function creditBurn(address from, uint256 amount) external;
+    function imd() external view returns (address);
     function distribute(uint256 n) external;
     function settleCrown() external;
     function requireManagerLocked() external view;

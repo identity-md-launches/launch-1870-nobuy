@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadToken} from "../src/PadToken.sol";
@@ -12,6 +13,9 @@ import {PoolKey} from "../src/interfaces/Interfaces.sol";
 /// @notice Receiver that re-enters the contract paying it. Every re-entry must be refused by the guard,
 /// which makes the push fail and the amount claimable instead.
 contract Reenterer {
+    constructor() {
+        TestIMD(TEST_IMD).setCallback(address(this), true);
+    }
     address public target;
     bytes public data;
     uint256 public entered;
@@ -21,7 +25,7 @@ contract Reenterer {
         data = data_;
     }
 
-    receive() external payable {
+    function onIMDTransfer(uint256 receivedAmount) external {
         entered += 1;
         if (target != address(0)) {
             (bool ok,) = target.call(data);
@@ -33,7 +37,7 @@ contract Reenterer {
 /// @notice Failure paths and edges the happy-path suites do not reach: sold-out curve, finalize edge
 /// cases, reentrancy, constructor and binding guards, king split edges, hash-window boundaries, events.
 contract AdversarialTest is BaseTest {
-    uint256 constant K = 1 ether * 1_000_000_000 ether;
+    uint256 constant K = 400 ether * 1_000_000_000 ether;
     uint256 constant VTOK = 1_000_000_000 ether;
     uint256 constant CURVE_SUPPLY = 800_000_000 ether;
 
@@ -54,13 +58,9 @@ contract AdversarialTest is BaseTest {
         vm.expectRevert(abi.encodeWithSignature("PadZero()"));
         new PvPPad(OWNER, address(tokenTemplate), address(0));
         vm.expectRevert(abi.encodeWithSignature("PadZero()"));
-        new PadLiquidity(
-            address(0), address(pad), IMD, 0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02
-        );
+        new PadLiquidity(address(0), address(pad), IMD);
         vm.expectRevert(abi.encodeWithSignature("PadZero()"));
-        new PadLiquidity(
-            address(pm), address(0), IMD, 0xd2fc01ee6f8400b6b4ea3b341a188568f2bd6c72b07b96741a82396fa6eb8f02
-        );
+        new PadLiquidity(address(pm), address(0), IMD);
         vm.expectRevert(abi.encodeWithSignature("PadZero()"));
         new KingOfThePad(address(pad), address(liq), address(0));
     }
@@ -158,13 +158,13 @@ contract AdversarialTest is BaseTest {
         // king and burn stay closed until a PvP graduates
         vm.prank(players[0]);
         vm.expectRevert(abi.encodeWithSignature("PadKingNotOpen()"));
-        king.takeCrown{value: 1 ether}();
-        vm.deal(address(this), 1 ether);
-        liq.fundBurn{value: 0.5 ether}();
+        king.takeCrown(400 ether);
+        imdDeal(address(this), 400 ether);
+        pad.burn(200.0 ether);
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         liq.burnChunk();
-        assertEq(liq.totalBurnedEth(), 0, "no PvP pool: nothing to buy");
-        assertEq(liq.burnBucket(), 0.5 ether);
+        assertEq(liq.totalBurnedIMD(), 0, "no PvP pool: nothing to buy");
+        assertEq(liq.burnBucket(), 200.0 ether);
     }
 
     function test_restartGenesisNeedsOpenPadAndFailedGenesis() public {
@@ -186,17 +186,17 @@ contract AdversarialTest is BaseTest {
         advance(10 minutes);
         pvp.finalize();
         graduateGame(pvp);
-        vm.deal(address(this), 1 ether);
-        pad.fundCarry{value: 0.3 ether}();
+        imdDeal(address(this), 400 ether);
+        pad.fundCarry(120.0 ether);
         uint256 id = pad.restartGenesis();
         PadGame g = PadGame(pad.gameOf(id));
         // Carry waits in the pad through signup and play, even for a five-Imp genesis
-        assertEq(pad.carryPot(), 0.3 ether);
+        assertEq(pad.carryPot(), 120.0 ether);
         assertEq(g.pot(), 0);
         mintAll(g, 5);
         advance(10 minutes);
         assertTrue(g.drawComplete());
-        assertEq(pad.carryPot(), 0.3 ether);
+        assertEq(pad.carryPot(), 120.0 ether);
         assertEq(g.pot(), 0);
         assertEq(g.fundedPot(), 0, "carry stays in pad until finalization");
         assertEq(g.rollPot(), 0);
@@ -229,16 +229,16 @@ contract AdversarialTest is BaseTest {
         _setCurve(pvp, CURVE_SUPPLY);
         (uint256 vEth, uint256 vTok, uint256 remaining) = pvp.curveState();
         assertEq(remaining, 0);
-        assertEq(vEth, 5 ether);
+        assertEq(vEth, 2000 ether);
         assertEq(vTok, 200_000_000 ether);
-        (uint256 q, uint256 used) = pvp.quote(0.0018 ether);
+        (uint256 q, uint256 used) = pvp.quote(0.9 ether);
         assertEq(q, 0);
         assertEq(used, 0);
         uint256 potBefore = pvp.pot();
         uint256 tokBefore = pvpToken.balanceOf(players[0]);
         rollAs(pvp, players[0]);
-        assertEq(pvp.pot() - potBefore, 0.00198 ether, "99% to pot after sell-out; 1% held for resolver");
-        assertEq(pvp.ethRaised(), 4 ether, "sold out stays sold out");
+        assertEq(pvp.pot() - potBefore, 0.97 ether, "99% to pot after sell-out; 1% held for resolver");
+        assertEq(pvp.imdRaised(), 1600 ether, "sold out stays sold out");
         assertEq(pvpToken.balanceOf(players[0]), tokBefore, "no tokens when sold out");
         assertEq(pvp.rollCount(), 1, "the dice still roll");
     }
@@ -250,16 +250,16 @@ contract AdversarialTest is BaseTest {
         uint256 remaining = 1000 ether; // 1000 tokens left on the curve
         _setCurve(pvp, CURVE_SUPPLY - remaining);
         (uint256 vEth,,) = pvp.curveState();
-        uint256 cost = 5 ether - vEth;
-        assertLt(cost, 0.0018 ether, "remaining costs less than one roll's curve share");
-        (uint256 q, uint256 used) = pvp.quote(0.0018 ether);
+        uint256 cost = 2000 ether - vEth;
+        assertLt(cost, 0.9 ether, "remaining costs less than one roll's curve share");
+        (uint256 q, uint256 used) = pvp.quote(0.9 ether);
         assertEq(q, remaining);
         assertEq(used, cost);
         uint256 potBefore = pvp.pot();
         rollAs(pvp, players[0]);
-        assertEq(pvp.ethRaised(), 4 ether, "curve closes at exactly 4 ETH");
+        assertEq(pvp.imdRaised(), 1600 ether, "curve closes at exactly 4 ETH");
         assertEq(pvp.tokensSold(), CURVE_SUPPLY);
-        assertEq(pvp.pot() - potBefore, 0.002 ether - cost - pvp.ROLL_TIP(), "unused curve ETH goes to the pot");
+        assertEq(pvp.pot() - potBefore, 0.98 ether - cost - pvp.ROLL_TIP(), "unused curve ETH goes to the pot");
         assertEq(pvpToken.balanceOf(players[0]), remaining);
     }
 
@@ -275,7 +275,7 @@ contract AdversarialTest is BaseTest {
             }
             advance(61);
         }
-        assertEq(pvp.ethRaised() + pvp.pot() + gameReserves(pvp), 30 * 0.002 ether);
+        assertEq(pvp.imdRaised() + pvp.pot() + gameReserves(pvp), 30 * 0.98 ether);
     }
 
     // ---- RNG window boundaries --------------------------------------------------------------------
@@ -374,7 +374,7 @@ contract AdversarialTest is BaseTest {
         assertEq(pvp.endTime(), pvp.hardEnd());
         uint256 p = pvp.pot();
         uint256 carryBefore = pad.carryPot();
-        uint256[3] memory before = [players[0].balance, players[1].balance, players[2].balance];
+        uint256[3] memory before = [imdBalance(players[0]), imdBalance(players[1]), imdBalance(players[2])];
         vm.expectEmit(true, false, false, true);
         emit Finalized(players[9], p - p * 50 / 10_000, 3, 2, false);
         vm.prank(players[9]);
@@ -382,12 +382,12 @@ contract AdversarialTest is BaseTest {
         uint256 fee = p * 50 / 10_000;
         uint256 ranks = p - fee; // no bell: the whole remainder goes to the ranks
         assertEq(pvp.paidAtEnd(), 2, "ceil(3/2)");
-        assertEq(players[1].balance - before[1], ranks * 2 / 3);
-        assertEq(players[0].balance - before[0], ranks * 1 / 3);
-        assertEq(players[2].balance, before[2], "rank 3 of 3 is unpaid");
+        assertEq(imdBalance(players[1]) - before[1], ranks * 2 / 3);
+        assertEq(imdBalance(players[0]) - before[0], ranks * 1 / 3);
+        assertEq(imdBalance(players[2]), before[2], "rank 3 of 3 is unpaid");
         uint256 dust = ranks - ranks * 2 / 3 - ranks * 1 / 3;
         assertEq(pad.carryPot() - carryBefore, dust, "rounding dust carries forward");
-        assertEq(address(pvp).balance, pvp.ethRaised() + gameReserves(pvp), "only curve ETH remains");
+        assertEq(imdBalance(address(pvp)), pvp.imdRaised() + gameReserves(pvp), "only curve ETH remains");
     }
 
     function test_bellRingerOutsideTopHalfStillGetsBellShare() public {
@@ -404,15 +404,15 @@ contract AdversarialTest is BaseTest {
         _setHeightAt(pvp, 2, 5, 1);
         _setBell(pvp, uint64(vm.getBlockTimestamp()), players[2]);
         uint256 p = pvp.pot();
-        uint256[3] memory before = [players[0].balance, players[1].balance, players[2].balance];
+        uint256[3] memory before = [imdBalance(players[0]), imdBalance(players[1]), imdBalance(players[2])];
         vm.prank(players[9]);
         pvp.finalize();
         uint256 fee = p * 50 / 10_000;
         uint256 bell = (p - fee) * 20 / 100;
         uint256 ranks = p - fee - bell;
-        assertEq(players[2].balance - before[2], bell, "ringer paid even when unranked");
-        assertEq(players[0].balance - before[0], ranks * 2 / 3);
-        assertEq(players[1].balance - before[1], ranks / 3);
+        assertEq(imdBalance(players[2]) - before[2], bell, "ringer paid even when unranked");
+        assertEq(imdBalance(players[0]) - before[0], ranks * 2 / 3);
+        assertEq(imdBalance(players[1]) - before[1], ranks / 3);
     }
 
     function test_singleLivingImpTakesEverything() public {
@@ -431,33 +431,33 @@ contract AdversarialTest is BaseTest {
         assertTrue(pvp.isAlive(1) && !pvp.isAlive(0));
         pvp.resolvePending(16);
         uint256 p = pvp.pot();
-        uint256 before = players[1].balance;
+        uint256 before = imdBalance(players[1]);
         vm.prank(players[9]);
         pvp.finalize();
         assertEq(pvp.livingAtEnd(), 1);
         assertEq(pvp.paidAtEnd(), 1);
-        assertEq(players[1].balance - before, p - p * 50 / 10_000);
+        assertEq(imdBalance(players[1]) - before, p - p * 50 / 10_000);
     }
 
     function test_fundPotRefusedFromStrangersAndAfterFinalize() public {
         openPad();
-        vm.deal(address(this), 1 ether);
+        imdDeal(address(this), 400 ether);
         vm.expectRevert(abi.encodeWithSignature("PadNotPad()"));
-        pvp.fundPot{value: 1}();
+        pvp.fundPot(1);
         vm.prank(OWNER);
         vm.expectRevert(abi.encodeWithSignature("PadNotPad()"));
-        pvp.fundPot{value: 0}();
+        pvp.fundPot(0);
         vm.prank(address(king));
         vm.expectRevert(abi.encodeWithSignature("PadNotPad()"));
-        pvp.fundPot{value: 0}();
+        pvp.fundPot(0);
         mintAll(pvp, 1);
         advance(10 minutes);
         advance(10 minutes);
         pvp.finalize();
-        vm.deal(address(pad), 1 ether);
+        imdDeal(address(pad), 400 ether);
         vm.prank(address(pad));
         vm.expectRevert(abi.encodeWithSignature("PadFinalized()"));
-        pvp.fundPot{value: 1}();
+        pvp.fundPot(1);
         assertEq(pvp.fundedPot(), 0);
     }
 
@@ -466,7 +466,7 @@ contract AdversarialTest is BaseTest {
         vm.expectRevert(abi.encodeWithSignature("PadNothing()"));
         pvp.claim();
         vm.expectRevert(abi.encodeWithSignature("PadNothing()"));
-        liq.claim();
+        liq.claim(TEST_IMD);
         vm.expectRevert(abi.encodeWithSignature("PadNothing()"));
         king.claim();
     }
@@ -475,14 +475,14 @@ contract AdversarialTest is BaseTest {
         openPad();
         for (uint256 i; i < 200; ++i) {
             address who = address(uint160(0xC000 + i));
-            vm.deal(who, 1 ether);
+            imdDeal(who, 400 ether);
             vm.prank(who);
-            pvp.enter{value: 0.001 ether}();
+            pvp.enter();
         }
         advance(10 minutes);
         for (uint256 i; i < 200; ++i) {
             vm.prank(address(uint160(0xC000 + i)));
-            pvp.roll{value: 0.002 ether}();
+            pvp.roll();
         }
         // the bell rings right away: all 200 rolled this second, so all 200 are alive at the end
         _setBell(pvp, uint64(vm.getBlockTimestamp()), address(0xC000));
@@ -503,20 +503,22 @@ contract AdversarialTest is BaseTest {
         assertEq(pvp.livingAtEnd(), 200);
         assertEq(pvp.paidAtEnd(), 100);
         assertLt(used, 32_000_000, "200-imp worst-case finalize fits an Arbitrum-stack block");
-        assertEq(address(pvp).balance, pvp.ethRaised() + gameReserves(pvp), "every rank paid or claimable: none here");
+        assertEq(
+            imdBalance(address(pvp)), pvp.imdRaised() + gameReserves(pvp), "every rank paid or claimable: none here"
+        );
     }
 
     // ---- reentrancy -------------------------------------------------------------------------------
     function test_reentrantWinnerIsRefusedAndMadeClaimable() public {
         openPad();
         Reenterer rj = new Reenterer();
-        vm.deal(address(rj), 1 ether);
+        imdDeal(address(rj), 400 ether);
         vm.prank(address(rj));
-        pvp.enter{value: 0.001 ether}();
+        pvp.enter();
         mintAll(pvp, 1);
         advance(10 minutes);
         vm.prank(address(rj));
-        pvp.roll{value: 0.002 ether}();
+        pvp.roll();
         rollAs(pvp, players[0]);
         arb.advance(4);
         pvp.resolvePending(8);
@@ -530,46 +532,46 @@ contract AdversarialTest is BaseTest {
         assertEq(pvp.claimable(address(rj)), ranks, "gas-capped push refused: amount claimable");
         // the claim itself re-enters claim(): the guard refuses it and the claim reverts, funds stay safe
         vm.prank(address(rj));
-        vm.expectRevert(abi.encodeWithSignature("PadClaimFailed()"));
+        vm.expectRevert(abi.encodeWithSignature("PadToken()"));
         pvp.claim();
         assertEq(pvp.claimable(address(rj)), ranks);
         rj.arm(address(0), "");
         vm.prank(address(rj));
         pvp.claim();
         assertEq(pvp.claimable(address(rj)), 0);
-        assertEq(address(rj).balance, 1 ether - 0.001 ether - 0.002 ether + ranks);
+        assertEq(imdBalance(address(rj)), 400 ether - 0.5 ether - 1 ether + ranks);
     }
 
     function test_reentrantKingRefundIsRefusedAndMadeClaimable() public {
         graduatePvp();
         Reenterer rj = new Reenterer();
-        vm.deal(address(rj), 1 ether);
+        imdDeal(address(rj), 400 ether);
         vm.prank(address(rj));
-        king.takeCrown{value: 0.01 ether}();
-        rj.arm(address(king), abi.encodeCall(KingOfThePad.takeCrown, ()));
+        king.takeCrown(4.0 ether);
+        rj.arm(address(king), abi.encodeCall(KingOfThePad.takeCrown, (king.nextMinBid())));
         vm.warp(vm.getBlockTimestamp() + 1 hours);
         vm.prank(players[1]);
-        king.takeCrown{value: 0.02 ether}();
+        king.takeCrown(8.0 ether);
         assertEq(king.king(), players[1]);
-        assertEq(king.claimable(address(rj)), 0.01 ether);
-        assertEq(address(king).balance, 0.01 ether);
+        assertEq(king.claimable(address(rj)), 4.0 ether);
+        assertEq(imdBalance(address(king)), 4.0 ether);
         rj.arm(address(0), "");
         vm.prank(address(rj));
         king.claim();
-        assertEq(address(king).balance, 0);
+        assertEq(imdBalance(address(king)), 0);
     }
 
     function test_reentrantDistributeFromKingIsRefused() public {
         graduatePvp();
         Reenterer rj = new Reenterer();
-        vm.deal(address(rj), 1 ether);
+        imdDeal(address(rj), 400 ether);
         vm.prank(address(rj));
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         rj.arm(address(liq), abi.encodeCall(PadLiquidity.distribute, (1)));
-        donateFees(liq.poolKey(address(pvpToken)), 0.1 ether, 0);
+        donateFees(liq.poolKey(address(pvpToken)), 40.0 ether, 0);
         liq.distribute(1);
-        assertApproxEqAbs(liq.claimable(address(rj)), 0.1 ether, 1e9, "push refused by the guard");
-        assertEq(address(liq).balance, liq.burnBucket() + liq.claimable(address(rj)));
+        assertApproxEqAbs(liq.claimable(TEST_IMD, address(rj)), 40.0 ether, 1e9, "push refused by the guard");
+        assertEq(imdBalance(address(liq)), liq.burnBucket() + liq.claimable(TEST_IMD, address(rj)));
     }
 
     // ---- king split edges -------------------------------------------------------------------------
@@ -586,11 +588,11 @@ contract AdversarialTest is BaseTest {
         assertEq(ga.rollPot() + gb.rollPot(), 0);
         assertEq(gb.fundedPot(), 0);
         vm.prank(players[8]);
-        king.takeCrown{value: 1 ether}();
-        assertEq(ga.fundedPot() - fundedA, 0.25 ether);
-        assertEq(gb.fundedPot(), 0.25 ether);
-        assertEq(ga.pot(), fundedA + 0.25 ether);
-        assertEq(gb.pot(), 0.25 ether);
+        king.takeCrown(400 ether);
+        assertEq(ga.fundedPot() - fundedA, 100.0 ether);
+        assertEq(gb.fundedPot(), 100.0 ether);
+        assertEq(ga.pot(), fundedA + 100.0 ether);
+        assertEq(gb.pot(), 100.0 ether);
         assertEq(ga.rollPot() + gb.rollPot(), 0, "the king share is funded ETH, never roll income");
     }
 
@@ -603,11 +605,11 @@ contract AdversarialTest is BaseTest {
         }
         uint256 funded0 = games[0].fundedPot(); // the carry pot went to the first of them
         vm.prank(players[8]);
-        king.takeCrown{value: 1 ether}();
+        king.takeCrown(400 ether);
         assertEq(games[0].fundedPot(), funded0, "launch #2 is outside the last ten");
         for (uint256 i = 1; i < 11; ++i) {
-            assertEq(games[i].fundedPot(), 0.05 ether);
-            assertEq(games[i].pot(), 0.05 ether);
+            assertEq(games[i].fundedPot(), 20.0 ether);
+            assertEq(games[i].pot(), 20.0 ether);
         }
     }
 
@@ -624,8 +626,8 @@ contract AdversarialTest is BaseTest {
         uint256 fundedSmall = small.fundedPot();
         uint256 fundedDone = done.fundedPot();
         vm.prank(players[8]);
-        king.takeCrown{value: 1 ether}();
-        assertEq(live.fundedPot(), 0.5 ether, "the only live game with five Imps takes the whole share");
+        king.takeCrown(400 ether);
+        assertEq(live.fundedPot(), 200.0 ether, "the only live game with five Imps takes the whole share");
         // upkeep inside takeCrown may finalize an ended game (funded returns to carry); it never adds
         assertLe(small.fundedPot(), fundedSmall);
         assertLe(done.fundedPot(), fundedDone);
@@ -634,28 +636,28 @@ contract AdversarialTest is BaseTest {
     function test_crownEventAndSameKingMayRebid() public {
         graduatePvp();
         vm.expectEmit(true, true, false, true);
-        emit Crowned(players[0], address(0), 0.01 ether, 0.01 ether, 0);
+        emit Crowned(players[0], address(0), 4.0 ether, 4.0 ether, 0);
         vm.prank(players[0]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         assertEq(king.crownCount(), 1);
         assertEq(king.challengeOpensAt(), vm.getBlockTimestamp() + 1 hours);
         vm.warp(vm.getBlockTimestamp() + 1 hours);
-        uint256 before = players[0].balance;
+        uint256 before = imdBalance(players[0]);
         vm.prank(players[0]);
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         assertEq(king.crownCount(), 2);
-        assertEq(before - players[0].balance, 0.001 ether, "rebid costs only the extra after the refund");
-        assertEq(king.bid(), 0.011 ether);
+        assertEq(before - imdBalance(players[0]), 0.4 ether, "rebid costs only the extra after the refund");
+        assertEq(king.bid(), 4.4 ether);
     }
 
     function test_takeCrownBeforeAnyBidRejectsZeroAndDust() public {
         graduatePvp();
         vm.prank(players[0]);
         vm.expectRevert(abi.encodeWithSignature("PadMinBid()"));
-        king.takeCrown{value: 0}();
+        king.takeCrown(0);
         vm.prank(players[0]);
         vm.expectRevert(abi.encodeWithSignature("PadMinBid()"));
-        king.takeCrown{value: 0.01 ether - 1}();
+        king.takeCrown(4.0 ether - 1);
     }
 
     function test_distributeRoundRobinAcrossPools() public {
@@ -667,22 +669,22 @@ contract AdversarialTest is BaseTest {
         if (!g.graduated()) graduateGame(g);
         assertEq(liq.poolCount(), 2);
         vm.prank(players[0]);
-        king.takeCrown{value: 0.01 ether}();
-        donateFees(liq.poolKey(address(pvpToken)), 0.1 ether, 0);
-        donateFees(liq.poolKey(address(t)), 0.2 ether, 0);
+        king.takeCrown(4.0 ether);
+        donateFees(liq.poolKey(address(pvpToken)), 40.0 ether, 0);
+        donateFees(liq.poolKey(address(t)), 80.0 ether, 0);
         uint256 c = liq.distributeCursor();
-        uint256 before = players[0].balance;
+        uint256 before = imdBalance(players[0]);
         king.distribute(1);
-        uint256 first = players[0].balance - before;
+        uint256 first = imdBalance(players[0]) - before;
         assertEq(liq.distributeCursor(), (c % 2) + 1);
-        before = players[0].balance;
+        before = imdBalance(players[0]);
         king.distribute(1);
-        uint256 second = players[0].balance - before;
-        assertApproxEqAbs(first + second, 0.3 ether, 1e9, "both pools visited once");
+        uint256 second = imdBalance(players[0]) - before;
+        assertApproxEqAbs(first + second, 120.0 ether, 1e9, "both pools visited once");
         assertTrue(first != second, "different pools on consecutive calls");
         king.distribute(5);
-        assertEq(address(liq).balance, liq.burnBucket(), "every collected wei was forwarded to the king");
-        assertGe(liq.getPool(0).ethFees + liq.getPool(1).ethFees, first + second);
+        assertEq(imdBalance(address(liq)), liq.burnBucket(), "every collected wei was forwarded to the king");
+        assertGe(liq.getPool(0).imdFees + liq.getPool(1).imdFees, first + second);
     }
 
     // ---- token ------------------------------------------------------------------------------------
@@ -728,11 +730,11 @@ contract AdversarialTest is BaseTest {
         vm.expectEmit(true, true, false, true);
         emit Entered(players[0], 1, true); // 1-based, like entryOf / myEntry
         vm.prank(players[0]);
-        g.enter{value: 0.001 ether}();
+        g.enter();
         vm.expectEmit(true, true, false, true);
         emit Entered(players[1], 2, false);
         vm.prank(players[1]);
-        g.enter{value: 0.001 ether}();
+        g.enter();
     }
 
     function test_hookRejectsForeignInitializeWithWrongKeyToo() public {
@@ -774,7 +776,7 @@ contract AdversarialTest is BaseTest {
     /// @dev Put a game's curve at `sold` tokens sold with the ETH that the constant product implies.
     function _setCurve(PadGame g, uint256 sold) internal {
         uint256 vEth = (K + (VTOK - sold) - 1) / (VTOK - sold);
-        vm.store(address(g), bytes32(uint256(5)), bytes32(vEth - 1 ether));
+        vm.store(address(g), bytes32(uint256(5)), bytes32(vEth - 400 ether));
         vm.store(address(g), bytes32(uint256(6)), bytes32(sold));
         assertEq(g.tokensSold(), sold);
     }

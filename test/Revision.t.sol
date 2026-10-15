@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+import {TestIMD, NoReturnIMD, imdBalance, imdDeal, TEST_IMD} from "./mocks/IMD.sol";
 
 import {BaseTest} from "./Base.t.sol";
 import {PadGame} from "../src/PadGame.sol";
@@ -19,6 +20,7 @@ contract ClaimBidder {
     uint256 public bidAmount;
 
     constructor(KingOfThePad king_, PadLiquidity liq_) {
+        TestIMD(TEST_IMD).setCallback(address(this), true);
         king = king_;
         liq = liq_;
     }
@@ -28,20 +30,20 @@ contract ClaimBidder {
     }
 
     function bid(uint256 v) external {
-        king.takeCrown{value: v}();
+        king.takeCrown(v);
     }
 
     function attack(uint256 v) external {
         bidAmount = v;
-        liq.claim();
+        liq.claim(TEST_IMD);
     }
 
-    receive() external payable {
+    function onIMDTransfer(uint256 receivedAmount) external {
         if (reject) revert("no");
         if (bidAmount != 0) {
             uint256 v = bidAmount;
             bidAmount = 0;
-            king.takeCrown{value: v}();
+            king.takeCrown(v);
         }
     }
 }
@@ -53,28 +55,28 @@ contract RevisionTest is BaseTest {
     function test_outgoingKingIsPaidEvenWhenTheBidComesFromInsideLiquidityClaim() public {
         graduatePvp();
         ClaimBidder thief = new ClaimBidder(king, liq);
-        vm.deal(address(thief), 1 ether);
-        thief.bid(0.01 ether);
-        donateFees(liq.poolKey(address(pvpToken)), 0.1 ether, 0);
+        imdDeal(address(thief), 400 ether);
+        thief.bid(4.0 ether);
+        donateFees(liq.poolKey(address(pvpToken)), 40.0 ether, 0);
         liq.distribute(1);
-        assertGt(liq.claimable(address(thief)), 0, "fees parked as claimable");
+        assertGt(liq.claimable(TEST_IMD, address(thief)), 0, "fees parked as claimable");
         vm.warp(king.challengeOpensAt());
         vm.prank(players[9]);
-        king.takeCrown{value: 0.011 ether}();
-        donateFees(liq.poolKey(address(pvpToken)), 0.2 ether, 0);
+        king.takeCrown(4.4 ether);
+        donateFees(liq.poolKey(address(pvpToken)), 80.0 ether, 0);
         vm.warp(king.challengeOpensAt());
         thief.setReject(false);
-        uint256 before = players[9].balance;
-        thief.attack(0.0121 ether);
+        uint256 before = imdBalance(players[9]);
+        thief.attack(4.84 ether);
         assertEq(king.king(), address(thief), "the bid itself is valid");
-        assertGe(players[9].balance - before, 0.011 ether + 0.2 ether - 1e12, "refund plus the fees of the reign");
-        assertEq(liq.claimable(address(thief)), 0);
+        assertGe(imdBalance(players[9]) - before, 4.4 ether + 80.0 ether - 1e12, "refund plus the fees of the reign");
+        assertEq(liq.claimable(TEST_IMD, address(thief)), 0);
     }
 
     function test_takeCrownRevertsInsteadOfSkippingTheOutgoingKingWhileLiquidityIsLocked() public {
         graduatePvp();
         vm.prank(players[8]);
-        king.takeCrown{value: 0.01 ether}();
+        king.takeCrown(4.0 ether);
         vm.warp(king.challengeOpensAt());
         vm.mockCallRevert(
             address(liq),
@@ -83,33 +85,33 @@ contract RevisionTest is BaseTest {
         );
         vm.prank(players[9]);
         vm.expectRevert(abi.encodeWithSignature("PadReentrancy()"));
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         assertEq(king.king(), players[8]);
         vm.clearMockedCalls();
         // Every distributor failure now vetoes a bid.
         vm.mockCallRevert(address(liq), abi.encodeWithSelector(PadLiquidity.settleCrown.selector), bytes("pool"));
         vm.prank(players[9]);
         vm.expectRevert(bytes("pool"));
-        king.takeCrown{value: 0.011 ether}();
+        king.takeCrown(4.4 ether);
         assertEq(king.king(), players[8]);
     }
 
     function test_liquidityClaimLockIsSeparateFromThePoolGuard() public {
         graduatePvp();
         ClaimBidder c = new ClaimBidder(king, liq);
-        vm.deal(address(c), 1 ether);
-        c.bid(0.01 ether);
-        donateFees(liq.poolKey(address(pvpToken)), 0.05 ether, 0);
+        imdDeal(address(c), 400 ether);
+        c.bid(4.0 ether);
+        donateFees(liq.poolKey(address(pvpToken)), 20.0 ether, 0);
         liq.distribute(1);
-        uint256 owed = liq.claimable(address(c));
+        uint256 owed = liq.claimable(TEST_IMD, address(c));
         assertGt(owed, 0);
         c.setReject(false);
         vm.prank(address(c));
-        liq.claim();
-        assertEq(liq.claimable(address(c)), 0);
+        liq.claim(TEST_IMD);
+        assertEq(liq.claimable(TEST_IMD, address(c)), 0);
         vm.prank(address(c));
         vm.expectRevert(abi.encodeWithSignature("PadNothing()"));
-        liq.claim();
+        liq.claim(TEST_IMD);
     }
 
     // ---- 22ea8fdb: funded release cap versus a sole-buyer token dump ------------------------------
@@ -117,13 +119,13 @@ contract RevisionTest is BaseTest {
         graduatePvp();
         PadGame g = PadGame(pad.gameOf(pad.launch("Bot", "BOT", "")));
         // a large funded pot (king share / carry) sits in the game before the sybil's five wallets play
-        vm.deal(address(pad), address(pad).balance + 5 ether);
+        imdDeal(address(pad), imdBalance(address(pad)) + 2000 ether);
         vm.prank(address(pad));
-        g.fundPot{value: 5 ether}();
+        g.fundPot(2000 ether);
         uint256 spent;
         uint256[5] memory before;
         for (uint256 i; i < 5; ++i) {
-            before[i] = players[i].balance;
+            before[i] = imdBalance(players[i]);
         }
         vm.pauseGasMetering();
         mintAll(g, 5);
@@ -142,8 +144,8 @@ contract RevisionTest is BaseTest {
         vm.resumeGasMetering();
         if (!g.graduated()) graduateGame(g);
         assertEq(g.livingAtEnd(), 5, "all five sybil Imps living at the end");
-        uint256 raised = g.ethRaised();
-        assertGt(raised, 0.4 ether);
+        uint256 raised = g.imdRaised();
+        assertGt(raised, 160.0 ether);
         // dump every token the sybil holds into the real pool
         PadToken t = PadToken(g.token());
         PoolKey memory key = liq.poolKey(address(t));
@@ -153,14 +155,14 @@ contract RevisionTest is BaseTest {
             t.transfer(address(router), bal);
             router.trade(key, false, bal);
         }
-        uint256 dump = address(router).balance;
+        uint256 dump = imdBalance(address(router));
         uint256 back = dump;
         for (uint256 i; i < 5; ++i) {
-            spent += before[i] - players[i].balance; // net of what the game paid this wallet back
+            spent += before[i] - imdBalance(players[i]); // net of what the game paid this wallet back
         }
         // `spent` is already net of payouts: a profitable attack would make it negative, i.e. revert above
         assertLt(back, spent, "dump plus capped release plus roll pot never reach what the sybil paid");
-        assertLe(5 ether - pad.carryPot(), raised * 15 / 100 + 1, "release never above 15% of the curve ETH");
+        assertLe(2000 ether - pad.carryPot(), raised * 15 / 100 + 1, "release never above 15% of the curve ETH");
         emit log_named_uint("curve ETH raised", raised);
         emit log_named_uint("sybil net outlay before the dump", spent);
         emit log_named_uint("dump proceeds", back);
@@ -169,14 +171,14 @@ contract RevisionTest is BaseTest {
     // ---- 1d6515bf: carry never parked in a launch nobody enters ---------------------------------
     function test_carryStaysInPadEvenAfterFiveSeats() public {
         graduatePvp();
-        vm.deal(address(this), 1 ether);
-        pad.fundCarry{value: 0.4 ether}();
+        imdDeal(address(this), 400 ether);
+        pad.fundCarry(160.0 ether);
         uint256 carry = pad.carryPot();
         address griefer = address(0xBAD);
         vm.prank(griefer);
         PadGame junk = PadGame(pad.gameOf(pad.launch("junk", "J", "")));
         assertEq(pad.carryPot(), carry, "a free launch moves nothing");
-        assertEq(address(junk).balance, 0);
+        assertEq(imdBalance(address(junk)), 0);
         vm.warp(vm.getBlockTimestamp() + 30 days);
         pad.upkeep();
         assertEq(pad.carryPot(), carry);
@@ -197,7 +199,7 @@ contract RevisionTest is BaseTest {
         assertTrue(real.drawComplete());
         assertEq(pad.carryPot(), carry);
         assertEq(real.fundedPot(), 0);
-        assertEq(address(pad).balance, carry);
+        assertEq(imdBalance(address(pad)), carry);
     }
 
     event CarryPaid(uint256 indexed id, uint256 amount);
@@ -205,13 +207,13 @@ contract RevisionTest is BaseTest {
     function test_takeCarryAndNoteFirstEntryAreGameOnly() public {
         graduatePvp();
         vm.expectRevert(abi.encodeWithSignature("PadNotGame()"));
-        pad.takeCarry(1, 1 ether);
+        pad.takeCarry(1, 400 ether);
         vm.expectRevert(abi.encodeWithSignature("PadNotGame()"));
         pad.noteFirstEntry(1);
         uint256 id = pad.launch("X", "X", "");
         vm.prank(pad.gameOf(1));
         vm.expectRevert(abi.encodeWithSignature("PadNotGame()"));
-        pad.takeCarry(id, 1 ether);
+        pad.takeCarry(id, 400 ether);
     }
 
     function test_freeLaunchesDoNotCrowdEnteredGamesOutOfTheKingWindowOrUpkeep() public {
@@ -227,8 +229,8 @@ contract RevisionTest is BaseTest {
         assertEq(pad.launchCount(), 14);
         assertEq(pad.enteredCount(), 2, "free launches are not entered launches");
         vm.prank(players[8]);
-        king.takeCrown{value: 1 ether}();
-        assertEq(live.fundedPot(), 0.5 ether, "the entered live game still receives the king's share");
+        king.takeCrown(400 ether);
+        assertEq(live.fundedPot(), 200.0 ether, "the entered live game still receives the king's share");
         // upkeep tends the entered game even though twelve newer launches exist
         vm.warp(live.signupEnd());
         arb.advance(40 * 60 * 4);

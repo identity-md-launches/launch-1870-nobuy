@@ -7,7 +7,7 @@ import {PadLib} from "./libs/PadLib.sol";
 import {IPvPPad, IPadLiquidity} from "./interfaces/Interfaces.sol";
 
 interface IPadFund {
-    function fundGames() external payable;
+    function fundGames(uint256 amount) external;
 }
 
 /// @title KingOfThePad
@@ -17,7 +17,6 @@ contract KingOfThePad {
     /// @notice Minimum settlement stipend a bid must carry. Everything the bidder supplies beyond the
     /// outer reserve is forwarded, so more pools settle when more gas is sent.
     uint256 public constant CROWN_DISTRIBUTE_GAS = 5_000_000;
-    uint256 public constant MIN_BID = 0.01 ether;
     uint256 public constant HOLD = 1 hours;
     uint256 public constant STEP_BPS = 11_000;
     uint256 internal constant CROWN_RESERVE_GAS = 600_000;
@@ -58,20 +57,20 @@ contract KingOfThePad {
         return dev;
     }
 
-    /// @notice First bid >= 0.01 ETH, then >= 110% of the current bid once the king has held 1 hour.
-    function takeCrown() external payable guard {
+    /// @notice First bid >= 4 current IMD units, then >= 110% of the current bid once the king has held 1 hour.
+    function takeCrown(uint256 amount) external guard {
         if (!(pad.genesisGraduated())) revert PadErrors.PadKingNotOpen();
         liquidity.requireManagerLocked();
         address previous = king;
         uint256 previousBid = bid;
         uint256 extra;
         if (previous == address(0)) {
-            if (!(msg.value >= MIN_BID)) revert PadErrors.PadMinBid();
-            extra = msg.value;
+            if (!(amount >= minBid())) revert PadErrors.PadMinBid();
+            extra = amount;
         } else {
             if (!(block.timestamp >= crownedAt + HOLD)) revert PadErrors.PadKingHolds();
-            if (!(msg.value >= previousBid * STEP_BPS / 10_000)) revert PadErrors.PadBidTooLow();
-            extra = msg.value - previousBid;
+            if (!(amount >= previousBid * STEP_BPS / 10_000)) revert PadErrors.PadBidTooLow();
+            extra = amount - previousBid;
         }
         // Forward at least the minimum stipend despite EIP-150, and every unit of gas the bidder
         // supplied beyond the outer reserve, so the settlement covers as many pools as the bid pays
@@ -83,23 +82,29 @@ contract KingOfThePad {
             }
             liquidity.settleCrown{gas: available - CROWN_RESERVE_GAS}();
         }
+        pad.pull(msg.sender, amount);
+        address imd = pad.imd();
+        if (crownCount == 0) {
+            PadLib.approve(imd, address(pad));
+            PadLib.approve(imd, address(liquidity));
+        }
         king = msg.sender;
-        bid = msg.value;
+        bid = amount;
         crownedAt = uint64(block.timestamp);
         crownCount += 1;
-        emit Crowned(msg.sender, previous, msg.value, extra, previousBid);
+        emit Crowned(msg.sender, previous, amount, extra, previousBid);
         if (previousBid != 0) {
-            bool ok = PadLib.push(previous, previousBid);
+            bool ok = PadLib.push(imd, previous, previousBid);
             if (!ok) claimable[previous] += previousBid;
             emit Refunded(previous, previousBid, ok);
         }
         uint256 games = extra / 2;
         uint256 burn = extra / 4;
         uint256 devShare = extra - games - burn;
-        if (games != 0) IPadFund(address(pad)).fundGames{value: games}();
-        if (burn != 0) liquidity.fundBurn{value: burn}();
+        if (games != 0) IPadFund(address(pad)).fundGames(games);
+        if (burn != 0) liquidity.fundBurn(burn);
         if (devShare != 0) {
-            bool okDev = PadLib.push(dev, devShare);
+            bool okDev = PadLib.push(imd, dev, devShare);
             if (!okDev) claimable[dev] += devShare;
         }
         emit ExtraSplit(games, burn, devShare);
@@ -116,13 +121,16 @@ contract KingOfThePad {
         uint256 amount = claimable[msg.sender];
         if (!(amount != 0)) revert PadErrors.PadNothing();
         claimable[msg.sender] = 0;
-        (bool ok,) = msg.sender.call{value: amount}("");
-        if (!(ok)) revert PadErrors.PadClaimFailed();
+        PadLib.transfer(pad.imd(), msg.sender, amount);
         emit Claimed(msg.sender, amount);
     }
 
+    function minBid() public view returns (uint256) {
+        return 4 * pad.unit();
+    }
+
     function nextMinBid() external view returns (uint256) {
-        return king == address(0) ? MIN_BID : bid * STEP_BPS / 10_000;
+        return king == address(0) ? minBid() : bid * STEP_BPS / 10_000;
     }
 
     function challengeOpensAt() external view returns (uint256) {

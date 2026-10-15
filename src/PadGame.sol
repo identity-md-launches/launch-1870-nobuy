@@ -15,32 +15,26 @@ contract PadGame {
 
     // ---- constants -------------------------------------------------------------------------
     IArbSys internal constant ARB = IArbSys(address(0x64));
-    uint256 public constant ROLL_PRICE = 0.002 ether;
     uint256 public constant COOLDOWN = 60;
     uint256 public constant SIGNUP = 10 minutes;
     uint256 public constant DEATH = 10 minutes;
     uint256 public constant MAX_PLAY = 50 minutes;
-    uint256 public constant ENTRY_PRICE = 0.001 ether;
     uint256 public constant DRAW_BATCH = 32;
     uint256 public constant MAX_IMPS = 200;
     int256 public constant HEIGHT_CAP = 50;
     uint256 public constant RESOLVE_BATCH = 16;
-    uint256 public constant ROLL_TIP = ROLL_PRICE / 100;
     uint256 internal constant RESOLVE_GAS_FLOOR = 200_000;
     uint256 public constant HASH_WINDOW = 256;
-    uint256 public constant VETH = 1 ether;
     uint256 public constant VTOK = 1_000_000_000 ether;
     uint256 public constant CURVE_SUPPLY = 800_000_000 ether;
-    uint256 public constant K = VETH * VTOK;
     uint256 public constant FINALIZER_BPS = 50;
-    uint256 public constant FINALIZER_MAX = 0.005 ether;
-    /// @notice Funded ETH (carry pot, king share) is paid out only when at least this many Imps live at the end.
+    /// @notice Funded IMD (carry pot, king share) is paid out only when at least this many seats qualify (living at end or alive when bailed).
     uint256 public constant FUNDED_MIN_LIVING = 5;
-    /// @notice Funded ETH paid out is capped at this multiple of the roll-earned pot; the rest returns to the carry.
+    /// @notice Funded IMD paid out is capped at this multiple of the roll-earned pot; the rest returns to the carry.
     uint256 public constant FUNDED_RELEASE_MULTIPLE = 3;
-    /// @notice Funded ETH is also capped at 15% of net curve ETH after bail-out sales.
+    /// @notice Funded IMD is also capped at 15% of net curve IMD after bail-out sales.
     /// Bail taxes never increase rollPot. See AUDIT.md #13 for the sole-buyer derivation,
-    /// including the IMD venue depth assumption and both graduation fallback paths.
+    /// with the direct IMD graduation and alive-bail qualification rule.
     uint256 public constant FUNDED_RELEASE_CURVE_BPS = 1_500;
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
@@ -73,9 +67,9 @@ contract PadGame {
     bool private initialized;
     bool private locked;
 
-    uint256 public ethRaised;
+    uint256 public imdRaised;
     uint256 public tokensSold;
-    uint256 public pot; // total: roll-earned + funded
+    uint256 public pot; // total: roll-earned + funded + bail taxes
 
     uint64 public firstEntryAt;
     uint64 public bellAt;
@@ -114,10 +108,12 @@ contract PadGame {
     uint256 internal bailPot;
     uint256 internal erasedCount;
     uint64 public finalizedAt;
-    bool internal conversionStarted;
+    uint256 public bailedAliveCount;
+    address public imd;
+    uint256 public unit;
 
     // ---- events ---------------------------------------------------------------------------
-    event Initialized(uint256 indexed launchId, address indexed token, bool genesis);
+    event Initialized(uint256 indexed launchId, address indexed token, bool genesis, uint256 unit);
     event Entered(address indexed owner, uint256 indexed entry, bool signupStarted);
     event DrawCommitted(uint256 indexed commitBlock);
     event DrawBounty(address indexed capturer, uint256 amount);
@@ -129,13 +125,13 @@ contract PadGame {
     event Rolled(address indexed owner, uint256 indexed imp, uint256 indexed roll, uint256 commitBlock, uint256 tokens);
     event Resolved(uint256 indexed roll, uint256 indexed imp, int256 delta, int256 height, bool expired);
     event Bell(uint256 indexed imp, address indexed ringer, int256 height);
-    event CurveBuy(uint256 ethIn, uint256 ethToCurve, uint256 tokensOut, uint256 ethToPot);
+    event CurveBuy(uint256 imdIn, uint256 imdToCurve, uint256 tokensOut, uint256 imdToPot);
     event PotFunded(address indexed from, uint256 amount);
     event Finalized(address indexed finalizer, uint256 pot, uint256 living, uint256 paid, bool bell);
     event FundedReturned(uint256 amount);
     event Paid(address indexed to, uint256 amount, bool pushed);
     event Claimed(address indexed to, uint256 amount);
-    event Graduated(uint256 eth, uint256 tokens);
+    event Graduated(uint256 imd, uint256 tokens);
     event Failed(uint256 tokensBurned);
     event BailedOut(address indexed player, uint256 coins, uint256 curveValue, uint256 cost, uint256 payout);
 
@@ -150,6 +146,30 @@ contract PadGame {
         initialized = true;
     }
 
+    function ROLL_PRICE() public view returns (uint256) {
+        return unit;
+    }
+
+    function ENTRY_PRICE() public view returns (uint256) {
+        return unit / 2;
+    }
+
+    function ROLL_TIP() public view returns (uint256) {
+        return unit / 100;
+    }
+
+    function VIMD() public view returns (uint256) {
+        return 400 * unit;
+    }
+
+    function K() public view returns (uint256) {
+        return 400 * unit * VTOK;
+    }
+
+    function FINALIZER_MAX() public view returns (uint256) {
+        return 2 * unit;
+    }
+
     // ---- lifecycle ------------------------------------------------------------------------
     function initialize(uint256 launchId_, address token_, address liquidity_, bool genesis_) external {
         if (!(!initialized)) revert PadErrors.PadInitialized();
@@ -159,13 +179,17 @@ contract PadGame {
         liquidity = liquidity_;
         launchId = launchId_;
         genesis = genesis_;
-        emit Initialized(launchId_, token_, genesis_);
+        unit = IPvPPad(pad).unit();
+        imd = IPvPPad(pad).imd();
+        PadLib.approve(imd, pad);
+        PadLib.approve(imd, liquidity);
+        emit Initialized(launchId_, token_, genesis_, unit);
     }
 
     /// @notice One nonrefundable entry per wallet, no entry cap. First entry starts signup.
-    function enter() external payable guard {
+    function enter() external guard {
         _requireOpen();
-        if (!(msg.value == ENTRY_PRICE)) revert PadErrors.PadEntryPrice();
+        IPvPPad(pad).pull(msg.sender, ENTRY_PRICE());
         if (!(entryOf[msg.sender] == 0)) revert PadErrors.PadOneEntryPerWallet();
         bool first = entrants.length == 0;
         if (first) firstEntryAt = uint64(block.timestamp);
@@ -173,8 +197,8 @@ contract PadGame {
         entrants.push(msg.sender);
         entryOf[msg.sender] = entrants.length;
         emit Entered(msg.sender, entrants.length, first);
-        if (first) drawBounty = msg.value;
-        else _fundBurn(msg.value);
+        if (first) drawBounty = ENTRY_PRICE();
+        else _fundBurn(ENTRY_PRICE());
         if (first) IPvPPad(pad).noteFirstEntry(launchId);
         _upkeep();
     }
@@ -249,10 +273,10 @@ contract PadGame {
         }
     }
 
-    /// @notice Roll the dice: 0.002 ETH, 60 s cooldown, 90% curve, 7% pot, 2% burn (genesis: pot), 1% resolver tip.
-    function roll() external payable guard {
+    /// @notice Roll the dice: one unit of IMD, 60 s cooldown, 90% curve, 7% pot, 2% burn , 1% resolver tip.
+    function roll() external guard {
         _requireOpen();
-        if (!(msg.value == ROLL_PRICE)) revert PadErrors.PadRollPrice();
+        IPvPPad(pad).pull(msg.sender, ROLL_PRICE());
         if (!(drawComplete)) revert PadErrors.PadNotPlaying();
         uint256 idx = impOf[msg.sender];
         if (!(idx != 0)) revert PadErrors.PadNoImp();
@@ -264,15 +288,14 @@ contract PadGame {
         if (imp.pendingRoll != 0) _resolveRoll(imp.pendingRoll - 1, msg.sender);
         _notOver(); // the previous roll may have rung the bell just now
 
-        uint256 curveEth = msg.value * 90 / 100;
-        uint256 burnEth = msg.value * 2 / 100;
-        uint256 potEth = msg.value - curveEth - burnEth - ROLL_TIP;
-        (uint256 tokensOut, uint256 ethUsed) = _buy(curveEth);
-        curveSpent[msg.sender] += ethUsed;
-        potEth += curveEth - ethUsed;
-        if (genesis) potEth += burnEth;
-        pot += potEth;
-        emit CurveBuy(msg.value, ethUsed, tokensOut, potEth);
+        uint256 curveIMD = ROLL_PRICE() * 90 / 100;
+        uint256 burnIMD = ROLL_PRICE() * 2 / 100;
+        uint256 potIMD = ROLL_PRICE() - curveIMD - burnIMD - ROLL_TIP();
+        (uint256 tokensOut, uint256 imdUsed) = _buy(curveIMD);
+        curveSpent[msg.sender] += imdUsed;
+        potIMD += curveIMD - imdUsed;
+        pot += potIMD;
+        emit CurveBuy(ROLL_PRICE(), imdUsed, tokensOut, potIMD);
 
         uint256 rollId = rolls.length;
         rolls.push(Roll(uint32(idx - 1), imp.nonce, uint64(ARB.arbBlockNumber()), false, false, 0));
@@ -284,13 +307,13 @@ contract PadGame {
         emit Rolled(msg.sender, idx - 1, rollId, rolls[rollId].commitBlock, tokensOut);
 
         if (tokensOut != 0) if (!(IPadToken(token).transfer(msg.sender, tokensOut))) revert PadErrors.PadToken();
-        if (!genesis && burnEth != 0) _fundBurn(burnEth);
+        if (burnIMD != 0) _fundBurn(burnIMD);
         _resolve(RESOLVE_BATCH, msg.sender);
         _upkeep();
     }
 
     /// @notice Sell every coin back to the curve and permanently erase this seat, during play only.
-    /// C records only ETH actually spent by this wallet's rolls, including after a previous sell-out.
+    /// C records only IMD actually spent by this wallet's rolls, including after a previous sell-out.
     function bailOut(uint256 minOut) external guard {
         if (!(drawComplete && !ended() && !finalized)) revert PadErrors.PadNotPlaying();
         if (!(impOf[msg.sender] != 0 && !erased[msg.sender])) revert PadErrors.PadNoImp();
@@ -302,9 +325,10 @@ contract PadGame {
             payout = value >= cost ? cost + (value - cost) / 2 : value * 90 / 100;
         }
         if (!(payout >= minOut)) revert PadErrors.PadMinOut();
+        if (_lastActivity(imps[impOf[msg.sender] - 1]) + DEATH > block.timestamp) ++bailedAliveCount;
         erased[msg.sender] = true;
         ++erasedCount;
-        ethRaised -= value;
+        imdRaised -= value;
         tokensSold -= coins;
         pot += value - payout;
         bailPot += value - payout;
@@ -324,40 +348,13 @@ contract PadGame {
         emit BailedOut(msg.sender, coins, value, cost, payout);
     }
 
-    /// @notice Prepare conversion once; callable by anyone, including PadLiquidity.convertChunk(game).
-    function prepareConversion() external guard {
-        _prepareConversion();
-    }
-
-    function _prepareConversion() internal {
-        if (!(finalized && !graduated && ethRaised != 0)) revert PadErrors.PadNotConverting();
-        if (conversionStarted) return;
-        conversionStarted = true;
-        IPadLiquidity(liquidity).startConversion{value: ethRaised}(launchId, finalizedAt);
-    }
-
-    function _conversionStep() internal {
-        if (ethRaised == 0) {
-            _graduate();
-            return;
-        }
-        _prepareConversion();
-        if (!_canGraduate()) {
-            // A bad or gas-hungry venue cannot prevent the 24-hour fallback.
-            if (gasleft() > 650_000) {
-                try IPadLiquidity(liquidity).convertChunk{gas: 500_000}(address(this)) {} catch {}
-            }
-        }
-        _graduate();
-    }
-
     /// @notice Permissionless upkeep for this game plus the pad's bounded upkeep.
     function poke() external guard {
         _draw(DRAW_BATCH, msg.sender);
         _resolve(RESOLVE_BATCH, msg.sender);
         if (entrants.length != 0) {
             if (!finalized) _finalize(msg.sender);
-            else if (!graduated) _conversionStep();
+            else if (!graduated) _graduate();
         }
         _upkeep();
     }
@@ -369,7 +366,7 @@ contract PadGame {
         _upkeep();
     }
 
-    /// @notice Moves curve ETH and remaining tokens into the v4 pool (or burns all when no ETH was raised).
+    /// @notice Moves curve IMD and remaining tokens into the v4 pool (or burns all when no IMD was raised).
     function graduate() external guard {
         if (!(_graduate())) revert PadErrors.PadNotGraduable();
         _upkeep();
@@ -385,7 +382,7 @@ contract PadGame {
         if (!finalized) {
             _finalize(caller);
         } else if (!graduated) {
-            _conversionStep();
+            _graduate();
         }
         locked = false;
     }
@@ -395,22 +392,22 @@ contract PadGame {
     }
 
     /// @notice Pad-only top-up (bounded carry at finalization, king's games share). Tracked apart from roll
-    /// income: it is paid out only to a game with >= 5 living Imps, capped at 3x the roll-earned pot,
+    /// income: it is paid out only with >= 5 qualifying seats, capped at 3x the roll-earned pot,
     /// and otherwise returns to the carry pot at the end.
-    function fundPot() external payable {
+    function fundPot(uint256 amount) external {
         _onlyPad();
         if (!(!finalized)) revert PadErrors.PadFinalized();
-        pot += msg.value;
-        fundedPot += msg.value;
-        emit PotFunded(msg.sender, msg.value);
+        PadLib.pullExact(imd, msg.sender, address(this), amount);
+        pot += amount;
+        fundedPot += amount;
+        emit PotFunded(msg.sender, amount);
     }
 
     function claim() external guard {
         uint256 amount = claimable[msg.sender];
         if (!(amount != 0)) revert PadErrors.PadNothing();
         claimable[msg.sender] = 0;
-        (bool ok,) = msg.sender.call{value: amount}("");
-        if (!(ok)) revert PadErrors.PadClaimFailed();
+        PadLib.transfer(imd, msg.sender, amount);
         emit Claimed(msg.sender, amount);
     }
 
@@ -440,11 +437,11 @@ contract PadGame {
         return bellAt != 0 && bellAt == endTime();
     }
 
-    /// @notice 0 waiting, 1 signup, 2 play, 3 ended, 4 finalized, 5 graduated, 6 failed, 7 drawing, 8 converting.
+    /// @notice 0 waiting, 1 signup, 2 play, 3 ended, 4 finalized, 5 graduated, 6 failed, 7 drawing.
     function status() external view returns (uint8) {
         if (failed) return 6;
         if (graduated) return 5;
-        if (finalized) return ethRaised == 0 || _canGraduate() ? 4 : 8;
+        if (finalized) return 4;
         if (entrants.length == 0) return 0;
         if (block.timestamp < signupEnd()) return 1;
         if (!drawComplete) return 7;
@@ -453,26 +450,26 @@ contract PadGame {
     }
 
     /// @notice Live for the king: signup started, not ended, >= 5 entries before the draw completes
-    /// or >= 5 Imps afterwards. Weight is the roll-earned pot; funded ETH cannot steer the split.
+    /// or >= 5 Imps afterwards. Weight is the roll-earned pot; funded IMD cannot steer the split.
     function isLiveForKing() external view returns (bool live, uint256 potSize) {
         live = entrants.length != 0 && !ended() && (drawComplete ? imps.length - erasedCount : entrants.length) >= 5;
         potSize = pot - fundedPot - bailPot;
     }
 
-    /// @notice ETH earned from rolls: 7%, genesis burn share, sold-out overflow and expired tips.
+    /// @notice IMD earned from rolls: 7%, genesis burn share, sold-out overflow and expired tips.
     function rollPot() external view returns (uint256) {
         return pot - fundedPot - bailPot;
     }
 
-    /// @notice Most funded ETH this game can pay out at its end (with >= 5 living Imps): the smaller of
-    /// 3x the roll-earned pot and 15% of the curve ETH raised. Before finalization, as of now.
+    /// @notice Most funded IMD this game can pay out at its end (with >= 5 qualifying seats): the smaller of
+    /// 3x the roll-earned pot and 15% of the curve IMD raised. Before finalization, as of now.
     function fundedReleaseCap() external view returns (uint256) {
         return _releaseCap(pot - fundedPot - bailPot);
     }
 
     function _releaseCap(uint256 earned) internal view returns (uint256 cap) {
         cap = earned * FUNDED_RELEASE_MULTIPLE;
-        uint256 curveCap = ethRaised * FUNDED_RELEASE_CURVE_BPS / 10_000;
+        uint256 curveCap = imdRaised * FUNDED_RELEASE_CURVE_BPS / 10_000;
         if (curveCap < cap) cap = curveCap;
     }
 
@@ -533,24 +530,24 @@ contract PadGame {
         return rolls[i];
     }
 
-    function curveState() external view returns (uint256 vEth, uint256 vTok, uint256 remaining) {
-        vEth = VETH + ethRaised;
+    function curveState() external view returns (uint256 vIMD, uint256 vTok, uint256 remaining) {
+        vIMD = VIMD() + imdRaised;
         vTok = VTOK - tokensSold;
         remaining = CURVE_SUPPLY - tokensSold;
     }
 
-    function quote(uint256 ethIn) public view returns (uint256 tokensOut, uint256 ethUsed) {
+    function quote(uint256 imdIn) public view returns (uint256 tokensOut, uint256 imdUsed) {
         uint256 remaining = CURVE_SUPPLY - tokensSold;
-        if (remaining == 0 || ethIn == 0) return (0, 0);
-        uint256 vEth = VETH + ethRaised;
+        if (remaining == 0 || imdIn == 0) return (0, 0);
+        uint256 vIMD = VIMD() + imdRaised;
         uint256 vTok = VTOK - tokensSold;
-        uint256 newTok = (K + vEth + ethIn - 1) / (vEth + ethIn);
+        uint256 newTok = (K() + vIMD + imdIn - 1) / (vIMD + imdIn);
         tokensOut = vTok > newTok ? vTok - newTok : 0;
-        ethUsed = ethIn;
+        imdUsed = imdIn;
         if (tokensOut >= remaining) {
             tokensOut = remaining;
-            ethUsed = K / (VTOK - CURVE_SUPPLY) - vEth;
-            if (ethUsed > ethIn) ethUsed = ethIn;
+            imdUsed = K() / (VTOK - CURVE_SUPPLY) - vIMD;
+            if (imdUsed > imdIn) imdUsed = imdIn;
         }
     }
 
@@ -560,8 +557,8 @@ contract PadGame {
         unchecked {
             if (coins == 0) return 0;
             uint256 newTok = VTOK - tokensSold + coins;
-            uint256 newEth = (K + newTok - 1) / newTok;
-            return VETH + ethRaised > newEth ? VETH + ethRaised - newEth : 0;
+            uint256 newIMD = (K() + newTok - 1) / newTok;
+            return VIMD() + imdRaised > newIMD ? VIMD() + imdRaised - newIMD : 0;
         }
     }
 
@@ -570,11 +567,11 @@ contract PadGame {
         return imp.lastRoll == 0 ? playStart() : imp.lastRoll;
     }
 
-    function _buy(uint256 ethIn) internal returns (uint256 tokensOut, uint256 ethUsed) {
-        // quote() bounds cumulative reserves to 4 ETH and CURVE_SUPPLY.
+    function _buy(uint256 imdIn) internal returns (uint256 tokensOut, uint256 imdUsed) {
+        // quote() bounds cumulative reserves to 1,600 units and CURVE_SUPPLY.
         unchecked {
-            (tokensOut, ethUsed) = quote(ethIn);
-            ethRaised += ethUsed;
+            (tokensOut, imdUsed) = quote(imdIn);
+            imdRaised += imdUsed;
             tokensSold += tokensOut;
         }
     }
@@ -622,9 +619,9 @@ contract PadGame {
         r.expired = expired;
         r.delta = int8(d);
         pendingCount -= 1;
-        if (expired) pot += ROLL_TIP;
-        else claimable[resolver] += ROLL_TIP;
-        emit ResolverTip(id, resolver, ROLL_TIP, expired);
+        if (expired) pot += ROLL_TIP();
+        else claimable[resolver] += ROLL_TIP();
+        emit ResolverTip(id, resolver, ROLL_TIP(), expired);
         if (imp.pendingRoll == id + 1) imp.pendingRoll = 0;
         int256 nh = h + d;
         if (nh > HEIGHT_CAP) nh = HEIGHT_CAP;
@@ -658,31 +655,28 @@ contract PadGame {
         }
         if (living > 1) _heapSort(keys, living);
         // Carry stays in the pad throughout play. Existing king funding consumes this cap first.
-        if (living >= FUNDED_MIN_LIVING) {
+        if (living != 0 && living + bailedAliveCount >= FUNDED_MIN_LIVING) {
             uint256 available = _releaseCap(pot - fundedPot - bailPot);
             if (available > fundedPot) IPvPPad(pad).takeCarry(launchId, available - fundedPot);
         }
         finalized = true;
         finalizedAt = uint64(block.timestamp);
-        // The conversion anchor is pad-wide and refreshed by the pad upkeep every path to this
-        // function runs (finalize, poke, upkeepStep); only a higher spot moves it, so a push bundled
-        // with this finalization is ignored.
         uint256 p = pot;
         uint256 funded = fundedPot;
         uint256 earned = p - funded - bailPot;
         bailPot = 0;
         pot = 0;
         fundedPot = 0;
-        // finalizer fee: 0.5% of the pot, max 0.005 ETH, paid from roll-earned ETH only
+        // finalizer fee: 0.5% of the pot, max 2 units of IMD, paid from roll-earned IMD only
         uint256 fee = p * FINALIZER_BPS / 10_000;
-        if (fee > FINALIZER_MAX) fee = FINALIZER_MAX;
+        if (fee > FINALIZER_MAX()) fee = FINALIZER_MAX();
         if (fee > earned) fee = earned;
         if (finalizer == address(0)) fee = 0;
         p -= fee;
-        // funded ETH is released only to a game with enough living Imps, at most 3x what rolls earned
-        // and at most 15% of the curve ETH (the part a token dump cannot pull back out of the pool)
+        // funded IMD is released only to a game with enough qualifying seats, at most 3x what rolls earned
+        // and at most 15% of the curve IMD (the part a token dump cannot pull back out of the pool)
         uint256 returned;
-        if (living < FUNDED_MIN_LIVING) {
+        if (living + bailedAliveCount < FUNDED_MIN_LIVING) {
             returned = funded;
         } else {
             uint256 cap = _releaseCap(earned);
@@ -713,7 +707,7 @@ contract PadGame {
         paidAtEnd = uint32(paid);
         if (fee != 0) _pay(finalizer, fee);
         if (returned != 0) emit FundedReturned(returned);
-        if (toCarry != 0) IPvPPad(pad).fundCarry{value: toCarry}();
+        if (toCarry != 0) IPvPPad(pad).fundCarry(toCarry);
         emit Finalized(finalizer, p, living, paid, bell);
         return true;
     }
@@ -764,7 +758,7 @@ contract PadGame {
     }
 
     function _fundBurn(uint256 amount) internal {
-        IPadLiquidity(liquidity).fundBurn{value: amount}();
+        IPadLiquidity(liquidity).fundBurn(amount);
     }
 
     function _balance(address who) internal view returns (uint256) {
@@ -787,34 +781,26 @@ contract PadGame {
         if (!(IPvPPad(pad).opened())) revert PadErrors.PadPadNotOpen();
     }
 
-    function _canGraduate() internal view returns (bool) {
-        return IPadLiquidity(liquidity).canGraduate(address(this));
-    }
-
     function _pay(address to, uint256 amount) internal {
         if (amount == 0) return;
-        bool ok = PadLib.push(to, amount);
+        bool ok = PadLib.push(imd, to, amount);
         if (!ok) claimable[to] += amount;
         emit Paid(to, amount, ok);
     }
 
     function _graduate() internal returns (bool) {
         if (!finalized || graduated) return false;
-        if (ethRaised != 0) {
-            _prepareConversion();
-            if (!_canGraduate()) return false;
-        }
         graduated = true;
         uint256 bal = _balance(address(this));
-        if (ethRaised == 0) {
+        if (imdRaised == 0) {
             failed = true;
             if (bal != 0) if (!(IPadToken(token).transfer(DEAD, bal))) revert PadErrors.PadBurn();
             emit Failed(bal);
             return true;
         }
         if (!(IPadToken(token).transfer(liquidity, bal))) revert PadErrors.PadToken();
-        IPadLiquidity(liquidity).graduate(launchId, token, bal, VETH + ethRaised, VTOK - tokensSold);
-        emit Graduated(ethRaised, bal);
+        IPadLiquidity(liquidity).graduate(launchId, token, bal, imdRaised, VIMD() + imdRaised, VTOK - tokensSold);
+        emit Graduated(imdRaised, bal);
         return true;
     }
 }
